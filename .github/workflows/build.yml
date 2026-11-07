@@ -140,6 +140,10 @@ jobs:
         run: |
           set -o pipefail
           SDK=$PWD/sdks/iPhoneOS16.5.sdk
+          which ld64.lld || ls /usr/bin/*lld* || true
+          ls /usr/lib/llvm-14/bin/ | grep -i lld || true
+          LINKER=$(command -v ld64.lld || echo /usr/lib/llvm-14/bin/ld64.lld)
+          echo "using linker: $LINKER"
           clang -target arm64-apple-ios14.0 \
             -isysroot "$SDK" \
             -F"$SDK/System/Library/Frameworks" \
@@ -147,7 +151,7 @@ jobs:
             -fobjc-arc -dynamiclib -O2 -Wno-deprecated-declarations \
             -framework Foundation -framework UIKit \
             -undefined dynamic_lookup \
-            --ld-path=/usr/bin/ld64.lld \
+            -fuse-ld="$LINKER" \
             -o MiloPatch.dylib hook.m 2>&1 | tail -25
           ls -la MiloPatch.dylib
 
