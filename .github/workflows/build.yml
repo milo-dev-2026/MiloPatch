@@ -116,8 +116,22 @@ jobs:
               if (!m) return;
               IMP cur = method_getImplementation(m);
               if (cur == (IMP)newImp) return;
-              *origImp = (void *)cur;
-              method_setImplementation(m, (IMP)newImp);
+
+              Method own = NULL;
+              unsigned int n = 0;
+              Method *ms = class_copyMethodList(c, &n);
+              for (unsigned int i = 0; i < n; i++) {
+                  if (method_getName(ms[i]) == sel) { own = ms[i]; break; }
+              }
+              free(ms);
+
+              if (own) {
+                  *origImp = (void *)method_getImplementation(own);
+                  method_setImplementation(own, (IMP)newImp);
+              } else {
+                  *origImp = (void *)cur;
+                  class_addMethod(c, sel, (IMP)newImp, method_getTypeEncoding(m));
+              }
           }
 
           __attribute__((constructor)) static void milo_init(void) {
