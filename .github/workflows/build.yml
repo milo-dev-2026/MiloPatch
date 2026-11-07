@@ -13,21 +13,7 @@ jobs:
       - name: Install deps
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq clang lld make libssl-dev xz-utils libtinfo5
-
-      - name: Clone Theos
-        run: |
-          git clone --depth 1 https://github.com/theos/theos.git $RUNNER_TEMP/theos
-          echo "THEOS=$RUNNER_TEMP/theos" >> $GITHUB_ENV
-
-      - name: Install linux toolchain
-        run: |
-          cd $THEOS
-          git submodule update --init --depth 1 || true
-          if [ ! -x "$THEOS/toolchain/linux/iphone/bin/clang" ]; then
-            bash $THEOS/bin/install-linux-toolchain.sh || true
-          fi
-          ls -la $THEOS/toolchain/linux/iphone/bin/ 2>&1 | head -5
+          sudo apt-get install -y -qq clang lld
 
       - name: Fetch iOS SDK
         uses: actions/checkout@v4
@@ -37,29 +23,135 @@ jobs:
           sparse-checkout: |
             iPhoneOS16.5.sdk
 
-      - name: Setup Theos env
+      - name: Write hook source
         run: |
-          mkdir -p $THEOS/sdks $THEOS/bin
-          cp -r sdks/iPhoneOS16.5.sdk $THEOS/sdks/
-          curl -sL https://github.com/ProcursusTeam/ldid/releases/download/v2.1.5-procursus7/ldid_linux_x86_64 -o $THEOS/bin/ldid
-          chmod +x $THEOS/bin/ldid
+          cat > hook.m << 'OBJC'
+          #import <UIKit/UIKit.h>
+          #import <objc/runtime.h>
 
-      - name: Build
+          static NSArray *BlockTitles(void) {
+              static NSArray *a;
+              static dispatch_once_t once;
+              dispatch_once(&once, ^{
+                  a = @[@"我的道具", @"道具商城", @"会员中心", @"网页登录", @"分享邀请", @"域名配置"];
+              });
+              return a;
+          }
+
+          static BOOL Hit(NSString *t) {
+              if (![t isKindOfClass:[NSString class]] || t.length == 0) return NO;
+              for (NSString *b in BlockTitles()) if ([t containsString:b]) return YES;
+              return NO;
+          }
+
+          static id IvarOf(id obj, const char *name) {
+              Ivar iv = class_getInstanceVariable([obj class], name);
+              return iv ? object_getIvar(obj, iv) : nil;
+          }
+
+          static void (*o_hdr_layout)(id, SEL);
+          static void h_hdr_layout(id self, SEL _cmd) {
+              o_hdr_layout(self, _cmd);
+              UIView *coin = IvarOf(self, "_ucoinCardView");
+              UIView *member = IvarOf(self, "_membershipCardView");
+              if ([coin isKindOfClass:[UIView class]]) { coin.hidden = YES; coin.alpha = 0; }
+              if ([member isKindOfClass:[UIView class]]) { member.hidden = YES; member.alpha = 0; }
+          }
+
+          static void (*o_cell_layout)(id, SEL);
+          static void h_cell_layout(id self, SEL _cmd) {
+              o_cell_layout(self, _cmd);
+              UILabel *lbl = IvarOf(self, "_titleLbl");
+              if ([lbl isKindOfClass:[UILabel class]] && Hit(lbl.text)) {
+                  UIView *v = (UIView *)self;
+                  v.hidden = YES;
+                  v.alpha = 0;
+                  v.userInteractionEnabled = NO;
+                  CGRect f = v.frame;
+                  f.size.height = 0;
+                  v.frame = f;
+              }
+          }
+
+          static void (*o_tcell_layout)(id, SEL);
+          static void h_tcell_layout(id self, SEL _cmd) {
+              o_tcell_layout(self, _cmd);
+              UITableViewCell *c = (UITableViewCell *)self;
+              UILabel *tl = c.textLabel;
+              if ([tl isKindOfClass:[UILabel class]] && Hit(tl.text)) {
+                  c.hidden = YES;
+                  c.alpha = 0;
+                  c.userInteractionEnabled = NO;
+                  CGRect f = c.frame;
+                  f.size.height = 0;
+                  c.frame = f;
+              }
+          }
+
+          static void (*o_vip_dmw)(id, SEL);
+          static void h_vip_dmw(id self, SEL _cmd) {
+              o_vip_dmw(self, _cmd);
+              UIView *v = (UIView *)self;
+              v.hidden = YES;
+              v.alpha = 0;
+          }
+
+          static void (*o_login_layout)(id, SEL);
+          static void h_login_layout(id self, SEL _cmd) {
+              o_login_layout(self, _cmd);
+              UIImageView *iv = IvarOf(self, "_iconView");
+              if ([iv isKindOfClass:[UIImageView class]]) {
+                  NSString *path = [[NSBundle mainBundle] pathForResource:@"milo_logo" ofType:@"png"];
+                  UIImage *logo = path ? [UIImage imageWithContentsOfFile:path] : nil;
+                  if (logo) iv.image = logo;
+              }
+          }
+
+          static void (*o_login_appear)(id, SEL, BOOL);
+          static void h_login_appear(id self, SEL _cmd, BOOL animated) {
+              o_login_appear(self, _cmd, animated);
+              UIViewController *vc = (UIViewController *)self;
+              vc.navigationItem.rightBarButtonItem = nil;
+              vc.navigationItem.rightBarButtonItems = nil;
+              vc.navigationItem.leftBarButtonItem = nil;
+              vc.navigationItem.leftBarButtonItems = nil;
+          }
+
+          static void patch(Class c, SEL sel, void *newImp, void **origImp) {
+              if (!c) return;
+              Method m = class_getInstanceMethod(c, sel);
+              if (!m) return;
+              *origImp = (void *)method_getImplementation(m);
+              method_setImplementation(m, (IMP)newImp);
+          }
+
+          __attribute__((constructor)) static void milo_init(void) {
+              patch(objc_getClass("FTProfileTableViewHeader"), @selector(layoutSubviews), (void *)h_hdr_layout, (void **)&o_hdr_layout);
+              patch(objc_getClass("WKMeItemCell"), @selector(layoutSubviews), (void *)h_cell_layout, (void **)&o_cell_layout);
+              patch(objc_getClass("UITableViewCell"), @selector(layoutSubviews), (void *)h_tcell_layout, (void **)&o_tcell_layout);
+              patch(objc_getClass("FAVipActivateView"), @selector(didMoveToWindow), (void *)h_vip_dmw, (void **)&o_vip_dmw);
+              patch(objc_getClass("FAVipTipsAlertView"), @selector(didMoveToWindow), (void *)h_vip_dmw, (void **)&o_vip_dmw);
+              patch(objc_getClass("WKLoginView"), @selector(layoutSubviews), (void *)h_login_layout, (void **)&o_login_layout);
+              patch(objc_getClass("WKLoginVC"), @selector(viewWillAppear:), (void *)h_login_appear, (void **)&o_login_appear);
+          }
+          OBJC
+
+      - name: Build dylib
         run: |
           set -o pipefail
-          export THEOS=$THEOS
-          make clean || true
-          make 2>&1 | tail -40
-
-      - name: Collect
-        run: |
-          set -o pipefail
-          mkdir -p out
-          find .theos -name "*.dylib" -exec cp {} out/ \;
-          ls -la out
-          test -f out/MiloPatch.dylib
+          SDK=$PWD/sdks/iPhoneOS16.5.sdk
+          clang -target arm64-apple-ios14.0 \
+            -isysroot "$SDK" \
+            -F"$SDK/System/Library/Frameworks" \
+            -I"$SDK/usr/include" \
+            -fobjc-arc -dynamiclib -O2 -Wno-deprecated-declarations \
+            -framework Foundation -framework UIKit \
+            -undefined dynamic_lookup \
+            --ld-path=/usr/bin/ld64.lld \
+            -o MiloPatch.dylib hook.m 2>&1 | tail -25
+          ls -la MiloPatch.dylib
 
       - uses: actions/upload-artifact@v4
         with:
           name: MiloPatch-dylib
-          path: out/MiloPatch.dylib
+          path: MiloPatch.dylib
