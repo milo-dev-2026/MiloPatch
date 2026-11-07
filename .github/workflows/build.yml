@@ -6,19 +6,28 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
       - name: Install deps
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq clang lld make libssl-dev xz-utils
+          sudo apt-get install -y -qq clang lld make libssl-dev xz-utils libtinfo5
 
       - name: Clone Theos
         run: |
-          git clone --recursive --depth 1 https://github.com/theos/theos.git $RUNNER_TEMP/theos
+          git clone --depth 1 https://github.com/theos/theos.git $RUNNER_TEMP/theos
           echo "THEOS=$RUNNER_TEMP/theos" >> $GITHUB_ENV
+
+      - name: Install linux toolchain
+        run: |
+          cd $THEOS
+          git submodule update --init --depth 1 || true
+          if [ ! -x "$THEOS/toolchain/linux/iphone/bin/clang" ]; then
+            bash $THEOS/bin/install-linux-toolchain.sh || true
+          fi
+          ls -la $THEOS/toolchain/linux/iphone/bin/ 2>&1 | head -5
 
       - name: Fetch iOS SDK
         uses: actions/checkout@v4
@@ -34,19 +43,21 @@ jobs:
           cp -r sdks/iPhoneOS16.5.sdk $THEOS/sdks/
           curl -sL https://github.com/ProcursusTeam/ldid/releases/download/v2.1.5-procursus7/ldid_linux_x86_64 -o $THEOS/bin/ldid
           chmod +x $THEOS/bin/ldid
-          $THEOS/bin/ldid -h 2>&1 | head -2 || true
 
       - name: Build
         run: |
+          set -o pipefail
           export THEOS=$THEOS
           make clean || true
           make 2>&1 | tail -40
 
       - name: Collect
         run: |
+          set -o pipefail
           mkdir -p out
-          find .theos -name "MiloPatch.dylib" -exec cp {} out/ \;
+          find .theos -name "*.dylib" -exec cp {} out/ \;
           ls -la out
+          test -f out/MiloPatch.dylib
 
       - uses: actions/upload-artifact@v4
         with:
