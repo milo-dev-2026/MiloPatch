@@ -140,7 +140,8 @@ jobs:
               if (!n) return NO;
               return [n containsString:@"Vip"] || [n containsString:@"VIP"]
                   || [n containsString:@"Pay"] || [n containsString:@"Purchase"]
-                  || [n containsString:@"Recharge"] || [n containsString:@"Purse"];
+                  || [n containsString:@"Recharge"] || [n containsString:@"Purse"]
+                  || [n containsString:@"Rights"] || [n containsString:@"Uliao"];
           }
 
           static void (*o_present)(id, SEL, UIViewController *, BOOL, void (^)(void));
