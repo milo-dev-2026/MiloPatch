@@ -1,0 +1,36 @@
+name: build-tweak
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Theos
+        run: |
+          brew install ldid xz
+          export THEOS=$RUNNER_TEMP/theos
+          git clone --recursive --depth 1 https://github.com/theos/theos.git $THEOS
+          mkdir -p $THEOS/sdks
+          echo "THEOS=$THEOS" >> $GITHUB_ENV
+
+      - name: Build
+        run: |
+          export THEOS=$THEOS
+          make clean || true
+          make
+
+      - name: Collect
+        run: |
+          mkdir -p out
+          find .theos -name "MiloPatch.dylib" -exec cp {} out/ \;
+          ls -la out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MiloPatch-dylib
+          path: out/MiloPatch.dylib
