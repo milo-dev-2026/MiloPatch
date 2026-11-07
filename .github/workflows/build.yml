@@ -121,11 +121,7 @@ jobs:
           }
 
           __attribute__((constructor)) static void milo_init(void) {
-              patch(objc_getClass("FTProfileTableViewHeader"), @selector(layoutSubviews), (void *)h_hdr_layout, (void **)&o_hdr_layout);
-              patch(objc_getClass("UITableViewCell"), @selector(layoutSubviews), (void *)h_tcell_layout, (void **)&o_tcell_layout);
               patch(objc_getClass("FAVipActivateView"), @selector(didMoveToWindow), (void *)h_vip_dmw, (void **)&o_vip_dmw);
-              patch(objc_getClass("WKLoginView"), @selector(layoutSubviews), (void *)h_login_layout, (void **)&o_login_layout);
-              patch(objc_getClass("WKLoginVC"), @selector(viewWillAppear:), (void *)h_login_appear, (void **)&o_login_appear);
           }
           OBJC
 
@@ -142,6 +138,7 @@ jobs:
             -F"$SDK/System/Library/Frameworks" \
             -I"$SDK/usr/include" \
             -fobjc-arc -dynamiclib -O2 -Wno-deprecated-declarations \
+            -Wno-unused-function -Wno-unused-variable \
             -framework Foundation -framework UIKit \
             -undefined dynamic_lookup \
             -fuse-ld="$LINKER" \
