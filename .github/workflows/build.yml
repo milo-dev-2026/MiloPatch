@@ -156,6 +156,15 @@ jobs:
             -o MiloPatch.dylib hook.m 2>&1 | tail -25
           ls -la MiloPatch.dylib
 
+      - name: Sign dylib
+        run: |
+          set -o pipefail
+          curl -sL https://github.com/ProcursusTeam/ldid/releases/download/v2.1.5-procursus7/ldid_linux_x86_64 -o ldid
+          chmod +x ldid
+          ./ldid -S MiloPatch.dylib
+          ls -la MiloPatch.dylib
+          file MiloPatch.dylib
+
       - uses: actions/upload-artifact@v4
         with:
           name: MiloPatch-dylib
