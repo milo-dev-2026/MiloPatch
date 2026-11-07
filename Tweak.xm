@@ -5,7 +5,7 @@ static NSArray<NSString *> *BlockTitles(void) {
     static NSArray *a;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        a = @[@"我的道具", @"道具商城", @"会员中心", @"网页登录", @"分享邀请"];
+        a = @[@"我的道具", @"道具商城", @"会员中心", @"网页登录", @"分享邀请", @"域名配置"];
     });
     return a;
 }
@@ -28,14 +28,8 @@ static id IvarOf(id obj, const char *name) {
     %orig;
     UIView *coin = IvarOf(self, "_ucoinCardView");
     UIView *member = IvarOf(self, "_membershipCardView");
-    if ([coin isKindOfClass:[UIView class]]) {
-        coin.hidden = YES;
-        coin.alpha = 0;
-    }
-    if ([member isKindOfClass:[UIView class]]) {
-        member.hidden = YES;
-        member.alpha = 0;
-    }
+    if ([coin isKindOfClass:[UIView class]]) { coin.hidden = YES; coin.alpha = 0; }
+    if ([member isKindOfClass:[UIView class]]) { member.hidden = YES; member.alpha = 0; }
 }
 %end
 
@@ -44,6 +38,21 @@ static id IvarOf(id obj, const char *name) {
     %orig;
     UILabel *lbl = IvarOf(self, "_titleLbl");
     if ([lbl isKindOfClass:[UILabel class]] && Hit(lbl.text)) {
+        self.hidden = YES;
+        self.alpha = 0;
+        self.userInteractionEnabled = NO;
+        CGRect f = self.frame;
+        f.size.height = 0;
+        self.frame = f;
+    }
+}
+%end
+
+%hook UITableViewCell
+- (void)layoutSubviews {
+    %orig;
+    UILabel *tl = self.textLabel;
+    if ([tl isKindOfClass:[UILabel class]] && Hit(tl.text)) {
         self.hidden = YES;
         self.alpha = 0;
         self.userInteractionEnabled = NO;
@@ -67,5 +76,27 @@ static id IvarOf(id obj, const char *name) {
     %orig;
     self.hidden = YES;
     self.alpha = 0;
+}
+%end
+
+%hook WKLoginView
+- (void)layoutSubviews {
+    %orig;
+    UIImageView *iv = IvarOf(self, "_iconView");
+    if ([iv isKindOfClass:[UIImageView class]]) {
+        NSString *path = [[NSBundle mainBundle] pathForResource:@"milo_logo" ofType:@"png"];
+        UIImage *logo = path ? [UIImage imageWithContentsOfFile:path] : nil;
+        if (logo) iv.image = logo;
+    }
+}
+%end
+
+%hook WKLoginVC
+- (void)viewWillAppear:(BOOL)animated {
+    %orig;
+    self.navigationItem.rightBarButtonItem = nil;
+    self.navigationItem.rightBarButtonItems = nil;
+    self.navigationItem.leftBarButtonItem = nil;
+    self.navigationItem.leftBarButtonItems = nil;
 }
 %end
