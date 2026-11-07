@@ -162,11 +162,39 @@ jobs:
               o_addsub(self, _cmd, v);
           }
 
+          typedef struct { unsigned long reserved; unsigned long size; void *copy; void *dispose; const char *signature; } BD;
+          typedef struct { void *isa; int flags; int reserved; void *invoke; BD *descriptor; } BK;
+
+          static void safeCallBlock(void *bp) {
+              if (!bp) return;
+              BK *b = (BK *)bp;
+              if (!b->descriptor || !b->descriptor->signature) return;
+              NSMethodSignature *sig = [NSMethodSignature signatureWithObjCTypes:b->descriptor->signature];
+              if (!sig) return;
+              if (sig.numberOfArguments <= 1) ((void (^)(void))bp)();
+              else ((void (^)(id))bp)(nil);
+          }
+
+          static void h_show1(id self, SEL _cmd, id title, id action) {
+              safeCallBlock((void *)action);
+          }
+
+          static void h_show4(id self, SEL _cmd, id title, id subtitle, id types, id action) {
+              safeCallBlock((void *)action);
+          }
+
+          static void h_check(id self, SEL _cmd) { }
+
+          static void (*o_show1)(id, SEL, id, id);
+          static void (*o_show4)(id, SEL, id, id, id, id);
+          static void (*o_check)(id, SEL);
+
           __attribute__((constructor)) static void milo_init(void) {
+              patch(objc_getClass("WKApp"), @selector(showUChatRightsAlertViewWithTitle:action:), (void *)h_show1, (void **)&o_show1);
+              patch(objc_getClass("WKApp"), @selector(showUChatRightsAlertViewWithTitle:subtitle:buttonTypes:action:), (void *)h_show4, (void **)&o_show4);
+              patch(objc_getClass("WKConversationListVC"), @selector(checkRightsExpiryIfNeeded), (void *)h_check, (void **)&o_check);
               patch(objc_getClass("UIViewController"), @selector(presentViewController:animated:completion:), (void *)h_present, (void **)&o_present);
               patch(objc_getClass("UINavigationController"), @selector(pushViewController:animated:), (void *)h_push, (void **)&o_push);
-              patch(objc_getClass("UIView"), @selector(addSubview:), (void *)h_addsub, (void **)&o_addsub);
-              patch(objc_getClass("FAVipActivateView"), @selector(didMoveToWindow), (void *)h_vip_dmw, (void **)&o_vip_dmw);
           }
           OBJC
 
