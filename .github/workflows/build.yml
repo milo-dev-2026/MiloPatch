@@ -134,7 +134,37 @@ jobs:
               }
           }
 
+          static BOOL IsPayClass(id obj) {
+              if (!obj) return NO;
+              NSString *n = NSStringFromClass([obj class]);
+              if (!n) return NO;
+              return [n containsString:@"Vip"] || [n containsString:@"VIP"]
+                  || [n containsString:@"Pay"] || [n containsString:@"Purchase"]
+                  || [n containsString:@"Recharge"] || [n containsString:@"Purse"];
+          }
+
+          static void (*o_present)(id, SEL, UIViewController *, BOOL, void (^)(void));
+          static void h_present(id self, SEL _cmd, UIViewController *vc, BOOL anim, void (^comp)(void)) {
+              if (IsPayClass(vc)) return;
+              o_present(self, _cmd, vc, anim, comp);
+          }
+
+          static void (*o_push)(id, SEL, UIViewController *, BOOL);
+          static void h_push(id self, SEL _cmd, UIViewController *vc, BOOL anim) {
+              if (IsPayClass(vc)) return;
+              o_push(self, _cmd, vc, anim);
+          }
+
+          static void (*o_addsub)(id, SEL, UIView *);
+          static void h_addsub(id self, SEL _cmd, UIView *v) {
+              if (v && IsPayClass(v)) return;
+              o_addsub(self, _cmd, v);
+          }
+
           __attribute__((constructor)) static void milo_init(void) {
+              patch(objc_getClass("UIViewController"), @selector(presentViewController:animated:completion:), (void *)h_present, (void **)&o_present);
+              patch(objc_getClass("UINavigationController"), @selector(pushViewController:animated:), (void *)h_push, (void **)&o_push);
+              patch(objc_getClass("UIView"), @selector(addSubview:), (void *)h_addsub, (void **)&o_addsub);
               patch(objc_getClass("FAVipActivateView"), @selector(didMoveToWindow), (void *)h_vip_dmw, (void **)&o_vip_dmw);
           }
           OBJC
