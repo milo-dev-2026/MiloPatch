@@ -152,6 +152,7 @@ jobs:
             -framework Foundation -framework UIKit \
             -undefined dynamic_lookup \
             -fuse-ld="$LINKER" \
+            -Wl,-platform_version,ios,14.0,14.0 \
             -o MiloPatch.dylib hook.m 2>&1 | tail -25
           ls -la MiloPatch.dylib
 
