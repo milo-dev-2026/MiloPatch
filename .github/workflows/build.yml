@@ -67,9 +67,6 @@ jobs:
                   v.hidden = YES;
                   v.alpha = 0;
                   v.userInteractionEnabled = NO;
-                  CGRect f = v.frame;
-                  f.size.height = 0;
-                  v.frame = f;
               }
           }
 
@@ -82,9 +79,6 @@ jobs:
                   c.hidden = YES;
                   c.alpha = 0;
                   c.userInteractionEnabled = NO;
-                  CGRect f = c.frame;
-                  f.size.height = 0;
-                  c.frame = f;
               }
           }
 
@@ -92,8 +86,7 @@ jobs:
           static void h_vip_dmw(id self, SEL _cmd) {
               o_vip_dmw(self, _cmd);
               UIView *v = (UIView *)self;
-              v.hidden = YES;
-              v.alpha = 0;
+              if (!v.hidden) { v.hidden = YES; v.alpha = 0; }
           }
 
           static void (*o_login_layout)(id, SEL);
@@ -121,16 +114,16 @@ jobs:
               if (!c) return;
               Method m = class_getInstanceMethod(c, sel);
               if (!m) return;
-              *origImp = (void *)method_getImplementation(m);
+              IMP cur = method_getImplementation(m);
+              if (cur == (IMP)newImp) return;
+              *origImp = (void *)cur;
               method_setImplementation(m, (IMP)newImp);
           }
 
           __attribute__((constructor)) static void milo_init(void) {
               patch(objc_getClass("FTProfileTableViewHeader"), @selector(layoutSubviews), (void *)h_hdr_layout, (void **)&o_hdr_layout);
-              patch(objc_getClass("WKMeItemCell"), @selector(layoutSubviews), (void *)h_cell_layout, (void **)&o_cell_layout);
               patch(objc_getClass("UITableViewCell"), @selector(layoutSubviews), (void *)h_tcell_layout, (void **)&o_tcell_layout);
               patch(objc_getClass("FAVipActivateView"), @selector(didMoveToWindow), (void *)h_vip_dmw, (void **)&o_vip_dmw);
-              patch(objc_getClass("FAVipTipsAlertView"), @selector(didMoveToWindow), (void *)h_vip_dmw, (void **)&o_vip_dmw);
               patch(objc_getClass("WKLoginView"), @selector(layoutSubviews), (void *)h_login_layout, (void **)&o_login_layout);
               patch(objc_getClass("WKLoginVC"), @selector(viewWillAppear:), (void *)h_login_appear, (void **)&o_login_appear);
           }
