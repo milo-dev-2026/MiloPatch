@@ -176,11 +176,11 @@ jobs:
           }
 
           static void h_show1(id self, SEL _cmd, id title, id action) {
-              safeCallBlock((void *)action);
+              safeCallBlock((__bridge void *)action);
           }
 
           static void h_show4(id self, SEL _cmd, id title, id subtitle, id types, id action) {
-              safeCallBlock((void *)action);
+              safeCallBlock((__bridge void *)action);
           }
 
           static void h_check(id self, SEL _cmd) { }
