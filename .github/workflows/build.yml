@@ -171,8 +171,8 @@ jobs:
               if (!b->descriptor || !b->descriptor->signature) return;
               NSMethodSignature *sig = [NSMethodSignature signatureWithObjCTypes:b->descriptor->signature];
               if (!sig) return;
-              if (sig.numberOfArguments <= 1) ((void (^)(void))bp)();
-              else ((void (^)(id))bp)(nil);
+              if (sig.numberOfArguments <= 1) ((__bridge void (^)(void))bp)();
+              else ((__bridge void (^)(id))bp)(nil);
           }
 
           static void h_show1(id self, SEL _cmd, id title, id action) {
