@@ -869,28 +869,89 @@ jobs:
               }
               return NULL;
           }
-          static void ScanHook(SEL sel, void *newImp) {
-              if (!g_origMap) g_origMap = [NSMutableDictionary dictionary];
-              int n = objc_getClassList(NULL, 0);
-              Class *cs = (Class *)malloc(sizeof(Class) * n);
-              n = objc_getClassList(cs, n);
-              int hooked = 0;
-              for (int i = 0; i < n; i++) {
-                  Class c = cs[i];
-                  Method m = class_getInstanceMethod(c, sel);
-                  if (!m) continue;
-                  Class sup = class_getSuperclass(c);
-                  Method smm = sup ? class_getInstanceMethod(sup, sel) : NULL;
-                  if (m == smm) continue;
-                  IMP orig = method_getImplementation(m);
-                  if (orig == (IMP)newImp) continue;
-                  g_origMap[MapKey(c, sel)] = [NSValue valueWithPointer:orig];
-                  method_setImplementation(m, (IMP)newImp);
-                  hooked++;
-                  LOGE([NSString stringWithFormat:@"scanhook %s -> %s", sel_getName(sel), class_getName(c)]);
+          static BOOL TypeCharSafe(char t) {
+              switch (t) { case 'd': case 'f': case '{': case '[': case '(': return NO; default: return YES; }
+          }
+          static Method FindOwnMethod(Class c, SEL sel) {
+              unsigned int mc = 0;
+              Method *ms = class_copyMethodList(c, &mc);
+              Method found = NULL;
+              for (unsigned int i = 0; i < mc; i++) {
+                  if (method_getName(ms[i]) == sel) { found = ms[i]; break; }
               }
-              free(cs);
-              if (!hooked) LOGE([NSString stringWithFormat:@"scanhook %s no-impl", sel_getName(sel)]);
+              if (ms) free(ms);
+              return found;
+          }
+          static BOOL HookClassSel(NSString *clsName, SEL sel, void *newImp, NSString *tag) {
+              if (!g_origMap) g_origMap = [NSMutableDictionary dictionary];
+              Class c = objc_getClass(clsName.UTF8String);
+              if (!c) { LOGE([NSString stringWithFormat:@"hookmiss %@ %s (class absent)", clsName, sel_getName(sel)]); return NO; }
+              Method m = FindOwnMethod(c, sel);
+              if (!m) { LOGE([NSString stringWithFormat:@"hookmiss %@ %s (not own)", clsName, sel_getName(sel)]); return NO; }
+              IMP orig = method_getImplementation(m);
+              if (orig == (IMP)newImp) return YES;
+              g_origMap[MapKey(c, sel)] = [NSValue valueWithPointer:orig];
+              method_setImplementation(m, (IMP)newImp);
+              LOGE([NSString stringWithFormat:@"hookok %@ %s (%@)", clsName, sel_getName(sel), tag]);
+              return YES;
+          }
+          static NSMutableDictionary *g_descMap = nil;
+          static void TLog(id self, SEL _cmd, id a1, uintptr_t a2, uintptr_t a3, BOOL d1);
+          static BOOL DescFlag(id self, SEL _cmd) {
+              Class k = [self class];
+              while (k) { NSNumber *v = g_descMap[MapKey(k, _cmd)]; if (v) return YES; k = class_getSuperclass(k); }
+              return NO;
+          }
+          static uintptr_t h_g0(id self, SEL _cmd) { TLog(self, _cmd, nil, 0, 0, NO); IMP o = FindOrig(self, _cmd); return o ? ((uintptr_t(*)(id, SEL))o)(self, _cmd) : 0; }
+          static uintptr_t h_g1(id self, SEL _cmd, id a1) { TLog(self, _cmd, a1, 0, 0, DescFlag(self, _cmd)); IMP o = FindOrig(self, _cmd); return o ? ((uintptr_t(*)(id, SEL, id))o)(self, _cmd, a1) : 0; }
+          static uintptr_t h_g2(id self, SEL _cmd, id a1, id a2) { TLog(self, _cmd, a1, (uintptr_t)a2, 0, DescFlag(self, _cmd)); IMP o = FindOrig(self, _cmd); return o ? ((uintptr_t(*)(id, SEL, id, id))o)(self, _cmd, a1, a2) : 0; }
+          static uintptr_t h_g3(id self, SEL _cmd, id a1, id a2, id a3) { TLog(self, _cmd, a1, (uintptr_t)a2, (uintptr_t)a3, DescFlag(self, _cmd)); IMP o = FindOrig(self, _cmd); return o ? ((uintptr_t(*)(id, SEL, id, id, id))o)(self, _cmd, a1, a2, a3) : 0; }
+          static uintptr_t h_g4(id self, SEL _cmd, id a1, id a2, id a3, id a4) { TLog(self, _cmd, a1, (uintptr_t)a2, (uintptr_t)a3, DescFlag(self, _cmd)); IMP o = FindOrig(self, _cmd); return o ? ((uintptr_t(*)(id, SEL, id, id, id, id))o)(self, _cmd, a1, a2, a3, a4) : 0; }
+          static uintptr_t h_g5(id self, SEL _cmd, id a1, id a2, id a3, id a4, id a5) { TLog(self, _cmd, a1, (uintptr_t)a2, (uintptr_t)a3, DescFlag(self, _cmd)); IMP o = FindOrig(self, _cmd); return o ? ((uintptr_t(*)(id, SEL, id, id, id, id, id))o)(self, _cmd, a1, a2, a3, a4, a5) : 0; }
+          static uintptr_t h_g6(id self, SEL _cmd, id a1, id a2, id a3, id a4, id a5, id a6) { TLog(self, _cmd, a1, (uintptr_t)a2, (uintptr_t)a3, DescFlag(self, _cmd)); IMP o = FindOrig(self, _cmd); return o ? ((uintptr_t(*)(id, SEL, id, id, id, id, id, id))o)(self, _cmd, a1, a2, a3, a4, a5, a6) : 0; }
+          static uintptr_t h_g7(id self, SEL _cmd, id a1, id a2, id a3, id a4, id a5, id a6, id a7) { TLog(self, _cmd, a1, (uintptr_t)a2, (uintptr_t)a3, DescFlag(self, _cmd)); IMP o = FindOrig(self, _cmd); return o ? ((uintptr_t(*)(id, SEL, id, id, id, id, id, id, id))o)(self, _cmd, a1, a2, a3, a4, a5, a6, a7) : 0; }
+          static NSArray *SkipSels(void) {
+              static NSArray *s = nil;
+              if (!s) s = @[@"description", @"debugDescription", @"dealloc", @".cxx_destruct", @"hash", @"isEqual:", @"class", @"superclass", @"observeValueForKeyPath:ofObject:change:context:", @"layoutSubviews", @"drawRect:", @"setNeedsLayout", @"setNeedsDisplay", @"setNeedsUpdateConstraints", @"updateConstraints", @"copy", @"mutableCopy", @"respondsToSelector:", @"conformsToProtocol:", @"isKindOfClass:", @"methodSignatureForSelector:", @"forwardInvocation:", @"setValue:forKey:", @"valueForKey:", @"willMoveToSuperview:", @"didMoveToSuperview", @"willMoveToWindow:", @"didMoveToWindow", @"setFrame:", @"setBounds:", @"setCenter:", @"setAlpha:", @"setHidden:", @"setBackgroundColor:"];
+              return s;
+          }
+          static void TraceClass(NSString *clsName) {
+              Class c = objc_getClass(clsName.UTF8String);
+              if (!c) { LOGE([NSString stringWithFormat:@"traceclass %@ absent", clsName]); return; }
+              if (!g_origMap) g_origMap = [NSMutableDictionary dictionary];
+              if (!g_descMap) g_descMap = [NSMutableDictionary dictionary];
+              NSArray *skip = SkipSels();
+              void *imps[8] = { (void *)h_g0, (void *)h_g1, (void *)h_g2, (void *)h_g3, (void *)h_g4, (void *)h_g5, (void *)h_g6, (void *)h_g7 };
+              unsigned int mc = 0;
+              Method *ms = class_copyMethodList(c, &mc);
+              int hooked = 0;
+              for (unsigned int i = 0; i < mc; i++) {
+                  SEL sel = method_getName(ms[i]);
+                  NSString *sn = NSStringFromSelector(sel);
+                  if ([skip containsObject:sn]) continue;
+                  if (g_origMap[MapKey(c, sel)]) continue;
+                  int na = (int)method_getNumberOfArguments(ms[i]) - 2;
+                  if (na < 0 || na > 7) continue;
+                  char rt[32]; method_getReturnType(ms[i], rt, sizeof(rt));
+                  if (!TypeCharSafe(rt[0])) continue;
+                  BOOL badArg = NO;
+                  for (int a = 2; a < na + 2; a++) {
+                      char at[64]; method_getArgumentType(ms[i], a, at, sizeof(at));
+                      if (!TypeCharSafe(at[0])) { badArg = YES; break; }
+                  }
+                  if (badArg) continue;
+                  if (na >= 1) {
+                      char at1[64]; method_getArgumentType(ms[i], 2, at1, sizeof(at1));
+                      if (at1[0] == '@') g_descMap[MapKey(c, sel)] = @YES;
+                  }
+                  IMP orig = method_getImplementation(ms[i]);
+                  if (orig == (IMP)imps[na]) continue;
+                  g_origMap[MapKey(c, sel)] = [NSValue valueWithPointer:orig];
+                  method_setImplementation(ms[i], (IMP)imps[na]);
+                  hooked++;
+              }
+              if (ms) free(ms);
+              LOGE([NSString stringWithFormat:@"traceclass %@ hooked=%d", clsName, hooked]);
           }
           static NSString *RelPathFromData(id data) {
               id extra = nil;
@@ -948,25 +1009,7 @@ jobs:
               IMP o = FindOrig(self, _cmd);
               if (o) ((void(*)(id, SEL))o)(self, _cmd);
           }
-          static void ScanHookVideoLoadData(void) {
-              if (!g_origMap) g_origMap = [NSMutableDictionary dictionary];
-              int n = objc_getClassList(NULL, 0);
-              Class *cs = (Class *)malloc(sizeof(Class) * n);
-              n = objc_getClassList(cs, n);
-              for (int i = 0; i < n; i++) {
-                  const char *cn = class_getName(cs[i]);
-                  if (!strstr(cn, "VideoBrowser")) continue;
-                  SEL sel = @selector(loadData);
-                  Method m = class_getInstanceMethod(cs[i], sel);
-                  if (!m) continue;
-                  IMP orig = method_getImplementation(m);
-                  if (orig == (IMP)h_vloaddata) continue;
-                  g_origMap[MapKey(cs[i], sel)] = [NSValue valueWithPointer:orig];
-                  method_setImplementation(m, (IMP)h_vloaddata);
-                  LOGE([NSString stringWithFormat:@"scanhook loadData -> %s", cn]);
-              }
-              free(cs);
-          }
+
           static void DumpMethods(NSString *clsName) {
               Class c = objc_getClass(clsName.UTF8String);
               if (!c) { LOGE([NSString stringWithFormat:@"methods %@: absent", clsName]); return; }
@@ -997,43 +1040,26 @@ jobs:
           static void h_tr7(id self, SEL _cmd, id a1, id a2, id a3, id a4, id a5, id a6, id a7) { TLog(self, _cmd, a1, (uintptr_t)a2, (uintptr_t)a3, YES); IMP o = FindOrig(self, _cmd); if (o) ((void(*)(id, SEL, id, id, id, id, id, id, id))o)(self, _cmd, a1, a2, a3, a4, a5, a6, a7); }
           static void HookVideoAndSend(void) {
               if (!g_origMap) g_origMap = [NSMutableDictionary dictionary];
+              if (!g_descMap) g_descMap = [NSMutableDictionary dictionary];
+              DumpMethods(@"WKVideoData");
               DumpMethods(@"FAVideoView");
-              DumpMethods(@"WKVideoCell");
-              DumpMethods(@"WKVideoBrowserData");
-              DumpMethods(@"WKVideoContent");
-              ScanHookVideoLoadData();
-              ScanHook(@selector(yb_videoIsInvalidForData:), (void *)h_vinvalid);
-              ScanHook(NSSelectorFromString(@"compressVideo:"), (void *)h_tr1);
-              ScanHook(NSSelectorFromString(@"compressVideo:complete:"), (void *)h_tr2);
-              ScanHook(NSSelectorFromString(@"convertVideoQuailtyWithInputURL:outputURL:completeHandler:"), (void *)h_tr3);
-              ScanHook(NSSelectorFromString(@"sendMediaMessageWithData:expired:"), (void *)h_tr2);
-              ScanHook(NSSelectorFromString(@"stopCurrentVideoRecording"), (void *)h_tr0);
-              ScanHook(NSSelectorFromString(@"videoRecord:imgCallback:"), (void *)h_tr2);
-              ScanHook(NSSelectorFromString(@"saveRemoteVideoWithURL:completion:"), (void *)h_tr2);
-              ScanHook(NSSelectorFromString(@"imagePickerController:didFinishPickingAndEditingVideo:outputPath:error:"), (void *)h_tr4);
-              ScanHook(NSSelectorFromString(@"showExpiredStatus:"), (void *)h_tr1b);
-              ScanHook(NSSelectorFromString(@"setVideoURL:"), (void *)h_tr1);
-              ScanHook(NSSelectorFromString(@"handleVideoDataWithMessageModel:row:section:"), (void *)h_tr3);
-              int n = objc_getClassList(NULL, 0);
-              Class *cs = (Class *)malloc(sizeof(Class) * n);
-              n = objc_getClassList(cs, n);
-              for (int i = 0; i < n; i++) {
-                  unsigned int mc = 0;
-                  Method *ms = class_copyMethodList(cs[i], &mc);
-                  for (unsigned int j = 0; j < mc; j++) {
-                      const char *sn = sel_getName(method_getName(ms[j]));
-                      if (strstr(sn, "Upload:fromeType:")) {
-                          IMP orig = method_getImplementation(ms[j]);
-                          if (orig != (IMP)h_tr7) {
-                              g_origMap[[NSString stringWithFormat:@"%s:%s", class_getName(cs[i]), sn]] = [NSValue valueWithPointer:orig];
-                              method_setImplementation(ms[j], (IMP)h_tr7);
-                              LOGE([NSString stringWithFormat:@"scanhook %s -> %s", sn, class_getName(cs[i])]);
-                          }
-                      }
-                  }
-                  if (ms) free(ms);
-              }
-              free(cs);
+              DumpMethods(@"JCVideoRecordManager");
+              DumpMethods(@"JCVideoRecordView");
+              DumpMethods(@"JCVideoRecordUtil");
+              // 视频查看修复
+              HookClassSel(@"WKVideoData", @selector(loadData), (void *)h_vloaddata, @"fix");
+              HookClassSel(@"WKVideoCell", @selector(yb_videoIsInvalidForData:), (void *)h_vinvalid, @"fix");
+              // 发送链路整类埋点(类型编码校验, 自动跳过危险签名)
+              TraceClass(@"JCVideoRecordManager");
+              TraceClass(@"JCVideoRecordView");
+              TraceClass(@"JCVideoRecordUtil");
+              TraceClass(@"FAVideoView");
+              TraceClass(@"WKVideoData");
+              TraceClass(@"WKVideoCell");
+              // 关键节点命名埋点
+              HookClassSel(@"WKConversationContextImpl", NSSelectorFromString(@"handleVideoDataWithMessageModel:row:section:"), (void *)h_g3, @"trace");
+              HookClassSel(@"BDOSSClient", NSSelectorFromString(@"OSSFileUpload:fromeType:dataExtensionName:coverExtensionName:data:progress:completeCallback:"), (void *)h_g7, @"trace");
+              HookClassSel(@"FAImageBrowserCell", NSSelectorFromString(@"showExpiredStatus:"), (void *)h_tr1b, @"trace");
           }
 
           static void HookYBBrowser(void) {
