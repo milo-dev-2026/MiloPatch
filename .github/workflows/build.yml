@@ -146,6 +146,23 @@ jobs:
 
           static void (*o_present)(id, SEL, UIViewController *, BOOL, void (^)(void));
           static void h_present(id self, SEL _cmd, UIViewController *vc, BOOL anim, void (^comp)(void)) {
+              @try {
+                  NSString *cn = NSStringFromClass([vc class]);
+                  NSString *t = nil, *m = nil;
+                  if ([vc isKindOfClass:[UIAlertController class]]) {
+                      t = ((UIAlertController *)vc).title;
+                      m = ((UIAlertController *)vc).message;
+                  }
+                  BOOL sus = NO;
+                  if (t && ([t containsString:@"过期"] || [t containsString:@"清理"] || [t containsString:@"资源"])) sus = YES;
+                  if (m && ([m containsString:@"过期"] || [m containsString:@"清理"] || [m containsString:@"资源"])) sus = YES;
+                  if (sus) {
+                      NSArray *syms = [NSThread callStackSymbols];
+                      NSMutableString *stk = [NSMutableString string];
+                      for (NSUInteger i = 0; i < MIN(syms.count, 30); i++) [stk appendFormat:@"\n  %@", syms[i]];
+                      LOGE([NSString stringWithFormat:@"EXPIRE-ALERT cls=%@ title=%@ msg=%@ stack:%@", cn, t, m, stk]);
+                  }
+              } @catch (NSException *e) {}
               if (IsPayClass(vc)) return;
               o_present(self, _cmd, vc, anim, comp);
           }
@@ -716,6 +733,45 @@ jobs:
               o_pullLast(self, _cmd, channel, limit, wrapped);
           }
 
+          // ---- 媒体下载链路追踪 ----
+          static void (*o_lbl_settext)(id, SEL, id);
+          static void h_lbl_settext(id self, SEL _cmd, id t) {
+              if ([t isKindOfClass:[NSString class]] && ([t containsString:@"过期"] || [t containsString:@"已被清理"])) {
+                  NSArray *syms = [NSThread callStackSymbols];
+                  NSMutableString *stk = [NSMutableString string];
+                  for (NSUInteger i = 0; i < MIN(syms.count, 25); i++) [stk appendFormat:@"\n  %@", syms[i]];
+                  LOGE([NSString stringWithFormat:@"EXPIRE-LABEL text=%@ stack:%@", t, stk]);
+              }
+              o_lbl_settext(self, _cmd, t);
+          }
+          static id (*o_sdm_load)(id, SEL, id, unsigned long, id, id);
+          static id h_sdm_load(id self, SEL _cmd, id url, unsigned long opt, id prog, id comp) {
+              LOGE([NSString stringWithFormat:@"sdload url=%@ opts=%lu", url, opt]);
+              return o_sdm_load(self, _cmd, url, opt, prog, comp);
+          }
+          static id (*o_sdiv_setimg)(id, SEL, id, id, unsigned long, id, id);
+          static id h_sdiv_setimg(id self, SEL _cmd, id url, id ph, unsigned long opt, id ctx, id prog) {
+              LOGE([NSString stringWithFormat:@"sdiv-setimg url=%@ ph=%@", url, ph ? @"y" : @"n"]);
+              return o_sdiv_setimg(self, _cmd, url, ph, opt, ctx, prog);
+          }
+          static void HookMediaDownload(void) {
+              patch(objc_getClass("UILabel"), @selector(setText:), (void *)h_lbl_settext, (void **)&o_lbl_settext);
+              Class sdm = objc_getClass("SDWebImageManager");
+              if (sdm) {
+                  SEL sel = @selector(loadImageWithURL:options:progress:completed:);
+                  if ([sdm instancesRespondToSelector:sel]) {
+                      patch(sdm, sel, (void *)h_sdm_load, (void **)&o_sdm_load);
+                      LOGE(@"sdwebimage-manager hooked");
+                  } else { LOGE(@"sdwebimage-manager no loadImage sel"); }
+              } else { LOGE(@"sdwebimage absent"); }
+              Class iv = objc_getClass("UIImageView");
+              SEL s2 = NSSelectorFromString(@"sd_setImageWithURL:placeholderImage:options:context:progress:");
+              if (iv && [iv instancesRespondToSelector:s2]) {
+                  patch(iv, s2, (void *)h_sdiv_setimg, (void **)&o_sdiv_setimg);
+                  LOGE(@"sdiv-setimg hooked");
+              }
+          }
+
           static void ProbeInit(void) {
               g_buf = [NSMutableArray array];
               g_lock = [NSLock new];
@@ -743,6 +799,7 @@ jobs:
               }
               patch(aes, @selector(aesDecrypt:key:iv:), (void *)h_dec, (void **)&o_dec);
               patch(cm, NSSelectorFromString(@"handleMessages:"), (void *)h_hmsgs, (void **)&o_hmsgs);
+              HookMediaDownload();
               Class wt = objc_getClass("NSURLSessionWebSocketTask");
               if (wt) patch(wt, NSSelectorFromString(@"receiveMessageWithCompletionHandler:"), (void *)h_wsrecv, (void **)&o_wsrecv);
               HookPackets();
