@@ -216,22 +216,22 @@ jobs:
               } @catch (NSException *e) { return nil; }
           }
 
-          static void (*o_dt)(id, SEL, NSURLRequest *, void (^)(NSData *, NSURLResponse *, NSError *));
-          static void h_dt(id self, SEL _cmd, NSURLRequest *req, void (^comp)(NSData *, NSURLResponse *, NSError *)) {
+          static id (*o_dt)(id, SEL, NSURLRequest *, void (^)(NSData *, NSURLResponse *, NSError *));
+          static id h_dt(id self, SEL _cmd, NSURLRequest *req, void (^comp)(NSData *, NSURLResponse *, NSError *)) {
               NSURLRequest *r = MiloRewrite(req) ?: req;
-              o_dt(self, _cmd, r, comp);
+              return o_dt(self, _cmd, r, comp);
           }
 
-          static void (*o_dt2)(id, SEL, NSURLRequest *);
-          static void h_dt2(id self, SEL _cmd, NSURLRequest *req) {
-              o_dt2(self, _cmd, MiloRewrite(req) ?: req);
+          static id (*o_dt2)(id, SEL, NSURLRequest *);
+          static id h_dt2(id self, SEL _cmd, NSURLRequest *req) {
+              return o_dt2(self, _cmd, MiloRewrite(req) ?: req);
           }
 
-          static void (*o_up)(id, SEL, NSURLRequest *, NSData *, void (^)(NSData *, NSURLResponse *, NSError *));
-          static void h_up(id self, SEL _cmd, NSURLRequest *req, NSData *body, void (^comp)(NSData *, NSURLResponse *, NSError *)) {
+          static id (*o_up)(id, SEL, NSURLRequest *, NSData *, void (^)(NSData *, NSURLResponse *, NSError *));
+          static id h_up(id self, SEL _cmd, NSURLRequest *req, NSData *body, void (^comp)(NSData *, NSURLResponse *, NSError *)) {
               NSURLRequest *r = MiloRewrite(req) ?: req;
               NSData *b = r.HTTPBody ?: body;
-              o_up(self, _cmd, r, b, comp);
+              return o_up(self, _cmd, r, b, comp);
           }
 
           __attribute__((constructor)) static void milo_init(void) {
