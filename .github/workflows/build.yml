@@ -396,6 +396,56 @@ jobs:
               typedef void (*F)(id, SEL, unsigned char);
               ((F)[o methodForSelector:s])(o, s, v);
           }
+          static void SetStr(id o, NSString *nm, id v) {
+              SEL s = NSSelectorFromString(nm);
+              if (!v || ![o respondsToSelector:s]) return;
+              typedef void (*F)(id, SEL, id);
+              ((F)[o methodForSelector:s])(o, s, v);
+          }
+          static void FixRecv(id pkt, NSData *d) {
+              if (![pkt respondsToSelector:@selector(setMessageId:)] || d.length < 24) return;
+              const uint8_t *p = d.bytes; NSUInteger n = d.length;
+              NSUInteger k = 0; int found = 0;
+              for (NSUInteger i = 8; i + 16 <= n; i++) {
+                  unsigned long long v = 0;
+                  for (int j = 0; j < 8; j++) v = (v << 8) | p[i + j];
+                  if ((v >> 56) == 0x1d && (v & 0xFFFF) == 0) { k = i; found = 1; break; }
+              }
+              if (!found) { LOGE(@"fixrecv no-msgid"); return; }
+              unsigned long long mid = 0;
+              for (int j = 0; j < 8; j++) mid = (mid << 8) | p[k + j];
+              unsigned int ms = 0, ts = 0;
+              for (int j = 0; j < 4; j++) ms = (ms << 8) | p[k + 8 + j];
+              for (int j = 0; j < 4; j++) ts = (ts << 8) | p[k + 12 + j];
+              NSUInteger po = k + 16;
+              NSString *pls = nil;
+              if (po < n) {
+                  NSData *pd = [d subdataWithRange:NSMakeRange(po, n - po)];
+                  pls = [[NSString alloc] initWithData:pd encoding:NSUTF8StringEncoding];
+              }
+              NSMutableArray *hs = [NSMutableArray array];
+              NSUInteger i = 1;
+              while (i < k) {
+                  NSUInteger ln = p[i];
+                  if (ln == 32 && i + 33 <= n) {
+                      NSString *s = [[NSString alloc] initWithData:[d subdataWithRange:NSMakeRange(i + 1, 32)] encoding:NSUTF8StringEncoding];
+                      if (s) [hs addObject:s];
+                      i += 33;
+                  } else if (ln < 40) {
+                      i += 1 + ln;
+                  } else break;
+              }
+              SetU64(pkt, @"setMessageId:", mid);
+              SetU32(pkt, @"setMessageSeq:", ms);
+              SetU32(pkt, @"setTimestamp:", ts);
+              SetU8(pkt, @"setChannelType:", 1);
+              if (hs.count > 0) SetStr(pkt, @"setFromUid:", hs[0]);
+              if (hs.count > 1) SetStr(pkt, @"setChannelId:", hs[1]);
+              SetStr(pkt, @"setPayload:", pls);
+              LOGE([NSString stringWithFormat:@"fixrecv mid=%llu ms=%u ts=%u from=%@ ch=%@ plen=%lu",
+                    mid, ms, ts, hs.count > 0 ? hs[0] : @"-", hs.count > 1 ? hs[1] : @"-", (unsigned long)(n - po)]);
+          }
+
           static void FixSendack(id pkt, NSData *d) {
               if (![pkt respondsToSelector:@selector(setClientSeq:)] || d.length < 17) return;
               const uint8_t *p = d.bytes;
@@ -439,6 +489,7 @@ jobs:
               } \
               if (o_pkd##N) o_pkd##N(s, c, d, hh); \
               if (N == 2 && (id)d) FixSendack((id)s, (NSData *)d); \
+              if (N == 1 && (id)d) FixRecv((id)s, (NSData *)d); \
               NSString *out = @""; \
               if ([(id)s respondsToSelector:NSSelectorFromString(@"fromUid")]) { \
                   out = [out stringByAppendingFormat:@"from=%@ ", [(id)s valueForKey:@"fromUid"]]; \
