@@ -376,6 +376,36 @@ jobs:
               o_wsrecv(self, _cmd, comp);
           }
 
+          #define PKDEC(N) \
+          static void (*o_pkd##N)(id, SEL, id, id); \
+          static void h_pkd##N(id s, SEL c, id d, id hh) { \
+              LOGE([NSString stringWithFormat:@"pkt%d-dec len=%lu", N, (unsigned long)PCnt(d)]); \
+              if (o_pkd##N) o_pkd##N(s, c, d, hh); \
+          }
+          PKDEC(0) PKDEC(1) PKDEC(2) PKDEC(3) PKDEC(4) PKDEC(5)
+
+          static void HookPackets(void) {
+              const char *pk[6] = {"WKConnackPacket", "WKRecvPacket", "WKSendackPacket",
+                                   "WKPingPacket", "WKPongPacket", "WKConnectPacket"};
+              void *orig[6] = {(void *)&o_pkd0, (void *)&o_pkd1, (void *)&o_pkd2,
+                               (void *)&o_pkd3, (void *)&o_pkd4, (void *)&o_pkd5};
+              void *h[6] = {(void *)h_pkd0, (void *)h_pkd1, (void *)h_pkd2,
+                            (void *)h_pkd3, (void *)h_pkd4, (void *)h_pkd5};
+              for (int i = 0; i < 6; i++) {
+                  Class k = objc_getClass(pk[i]);
+                  if (!k) continue;
+                  SEL sel = NSSelectorFromString(@"decode:header:");
+                  if (![k instancesRespondToSelector:sel]) {
+                      LOGE([NSString stringWithFormat:@"pkt %s no-decode", pk[i]]);
+                      continue;
+                  }
+                  Method m = class_getInstanceMethod(k, sel);
+                  *(void **)orig[i] = (void *)method_getImplementation(m);
+                  method_setImplementation(m, (IMP)h[i]);
+                  LOGE([NSString stringWithFormat:@"pkt hook %s", pk[i]]);
+              }
+          }
+
           static void ProbeInit(void) {
               g_buf = [NSMutableArray array];
               g_lock = [NSLock new];
@@ -401,8 +431,8 @@ jobs:
               patch(cm, NSSelectorFromString(@"handleMessages:"), (void *)h_hmsgs, (void **)&o_hmsgs);
               Class wt = objc_getClass("NSURLSessionWebSocketTask");
               if (wt) patch(wt, NSSelectorFromString(@"receiveMessageWithCompletionHandler:"), (void *)h_wsrecv, (void **)&o_wsrecv);
+              HookPackets();
               LOGE(@"MILOPROBE init-done");
-              DumpAPI();
               ScheduleFlush();
           }
 
