@@ -435,6 +435,7 @@ jobs:
               }
               SetStr(pkt, sel, v);
           }
+          static NSData *DecryptPayload(NSData *pld);
           static void FixRecv(id pkt, NSData *d) {
               if (![pkt respondsToSelector:@selector(setMessageId:)] || d.length < 24) return;
               const uint8_t *p = d.bytes; NSUInteger n = d.length;
@@ -497,12 +498,21 @@ jobs:
               SetU32(pkt, @"setMessageSeq:", ms);
               SetU32(pkt, @"setTimestamp:", ts);
               SetU8(pkt, @"setChannelType:", 1);
-              if (hs.count > 0) SetObjSafe(pkt, @"setFromUid:", @"fromUid", hs[0], "NSString");
-              if (hs.count > 1) SetObjSafe(pkt, @"setChannelId:", @"channelId", hs[1], "NSString");
-              SetObjSafe(pkt, @"setPayload:", @"payload", pld, "NSData");
+              // 字段顺序(对齐开源 SDK decodeLM)：setting, msgKey, fromUid, channelId, channelType, expire, clientMsgNo, msgId, seq, ts, payload
+              // hs[0] 是 msgKey(md5 校验串)，绝不是 fromUid！
+              NSString *from = nil, *ch = nil;
+              if (hs.count >= 3) { from = hs[1]; ch = hs[2]; }
+              else if (hs.count == 2) { from = hs[0]; ch = hs[1]; }
+              if (from) SetObjSafe(pkt, @"setFromUid:", @"fromUid", from, "NSString");
+              if (ch) SetObjSafe(pkt, @"setChannelId:", @"channelId", ch, "NSString");
+              // payload 是 AES 密文，必须经 WKSecurityManager 解密成明文 JSON
+              NSData *plain = DecryptPayload(pld);
+              NSData *finalPayload = plain ? plain : pld;
+              SetObjSafe(pkt, @"setPayload:", @"payload", finalPayload, "NSData");
               if (cmn) SetObjSafe(pkt, @"setClientMsgNo:", @"clientMsgNo", cmn, "NSString");
-              LOGE([NSString stringWithFormat:@"fixrecv mid=%llu ms=%u ts=%u from=%@ ch=%@ cmn=%@ plen=%lu",
-                    mid, ms, ts, hs.count > 0 ? hs[0] : @"-", hs.count > 1 ? hs[1] : @"-", cmn ? cmn : @"-", (unsigned long)(pld ? pld.length : 0)]);
+              LOGE([NSString stringWithFormat:@"fixrecv mid=%llu ms=%u ts=%u from=%@ ch=%@ cmn=%@ plen=%lu dec=%d",
+                    mid, ms, ts, from ? from : @"-", ch ? ch : @"-", cmn ? cmn : @"-",
+                    (unsigned long)(finalPayload ? finalPayload.length : 0), plain ? 1 : 0]);
           }
 
           static void FixSendack(id pkt, NSData *d) {
@@ -521,48 +531,50 @@ jobs:
               LOGE([NSString stringWithFormat:@"fixack mid=%llu cs=%u ms=%u rc=%u", mid, cs, ms, rc]);
           }
 
+          static NSData *DecryptPayload(NSData *pld) {
+              if (!pld) return nil;
+              NSString *cipher = [[NSString alloc] initWithData:pld encoding:NSUTF8StringEncoding];
+              if (!cipher.length) return nil;
+              Class sec = NSClassFromString(@"WKSecurityManager");
+              if (!sec || ![sec respondsToSelector:@selector(shared)]) { LOGE(@"sec-missing"); return nil; }
+              id sm = nil;
+              @try { sm = [sec performSelector:@selector(shared)]; } @catch (__unused NSException *e) {}
+              if (!sm || ![sm respondsToSelector:@selector(decryption:)]) { LOGE(@"sec-no-dec"); return nil; }
+              NSString *plain = nil;
+              @try { plain = [sm performSelector:@selector(decryption:) withObject:cipher]; }
+              @catch (__unused NSException *e) { LOGE(@"dec-crashed"); return nil; }
+              if ([plain isKindOfClass:[NSString class]] && plain.length > 0 && [plain hasPrefix:@"{"]) {
+                  return [plain dataUsingEncoding:NSUTF8StringEncoding];
+              }
+              return nil;
+          }
+
+          // decode:header: 返回 WKPacket*，且 decodeLM 内部是 new 新对象返回
+          // 必须捕获并返回原实现的返回值，失败（nil/异常）时才走手工修复
           #define PKDEC(N) \
-          static void (*o_pkd##N)(id, SEL, id, id); \
-          static void h_pkd##N(id s, SEL c, id d, id hh) { \
-              NSString *cc = NSStringFromClass([(id)d class]); \
-              NSString *hx = @"?"; \
-              if ([(id)d respondsToSelector:@selector(length)]) { \
-                  NSUInteger ln = (NSUInteger)[(id)d length]; \
-                  hx = [NSString stringWithFormat:@"len=%lu", (unsigned long)ln]; \
-                  if (ln > 0 && ln <= 4096) { \
-                      NSData *dt = (NSData *)d; \
-                      NSUInteger n2 = ln < 40 ? ln : 40; \
-                      hx = [hx stringByAppendingFormat:@" %@", [dt subdataWithRange:NSMakeRange(0, n2)]]; \
-                  } \
+          static id (*o_pkd##N)(id, SEL, id, id); \
+          static id h_pkd##N(id s, SEL c, id d, id hh) { \
+              id ret = nil; BOOL threw = NO; \
+              if (o_pkd##N) { \
+                  @try { ret = o_pkd##N(s, c, d, hh); } \
+                  @catch (NSException *ex) { threw = YES; LOGE([NSString stringWithFormat:@"pkt%d decode-threw %@", N, ex.name]); } \
               } \
-              LOGE([NSString stringWithFormat:@"pkt%d cls=%@ %@", N, cc, hx]); \
               if (N == 1 && [(id)d respondsToSelector:@selector(length)]) { \
-                  NSData *dt = (NSData *)d; \
-                  NSUInteger n1 = dt.length; \
-                  NSUInteger ck = 0; \
-                  for (NSUInteger o1 = 0; o1 < n1 && ck < 12; o1 += 64) { \
-                      NSUInteger el = (n1 - o1) < 64 ? (n1 - o1) : 64; \
-                      LOGE([NSString stringWithFormat:@"rawrecv %lu %@", (unsigned long)o1, [dt subdataWithRange:NSMakeRange(o1, el)]]); \
-                      ck++; \
+                  if (ret) { \
+                      id pf = nil; @try { pf = [ret valueForKey:@"payload"]; } @catch (__unused NSException *e) {} \
+                      NSString *ps = [pf isKindOfClass:[NSData class]] ? [[NSString alloc] initWithData:pf encoding:NSUTF8StringEncoding] : nil; \
+                      LOGE([NSString stringWithFormat:@"pkt1 orig-ok seq=%@ plen=%lu phead=%@", \
+                            [ret valueForKey:@"messageSeq"], (unsigned long)(pf ? [pf length] : 0), \
+                            ps ? [ps substringToIndex:MIN((NSUInteger)20, ps.length)] : @"?"]); \
+                  } else { \
+                      LOGE([NSString stringWithFormat:@"pkt1 orig-nil threw=%d", threw]); \
+                      FixRecv((id)s, (NSData *)d); \
+                      ret = s; \
                   } \
               } \
-              if (o_pkd##N) o_pkd##N(s, c, d, hh); \
-              if (N == 2 && (id)d) FixSendack((id)s, (NSData *)d); \
-              if (N == 1 && (id)d) FixRecv((id)s, (NSData *)d); \
-              NSString *out = @""; \
-              if ([(id)s respondsToSelector:NSSelectorFromString(@"fromUid")]) { \
-                  out = [out stringByAppendingFormat:@"from=%@ ", [(id)s valueForKey:@"fromUid"]]; \
-              } \
-              if ([(id)s respondsToSelector:NSSelectorFromString(@"messageSeq")]) { \
-                  out = [out stringByAppendingFormat:@"seq=%@ ", [(id)s valueForKey:@"messageSeq"]]; \
-              } \
-              if ([(id)s respondsToSelector:NSSelectorFromString(@"channelId")]) { \
-                  out = [out stringByAppendingFormat:@"ch=%@ ", [(id)s valueForKey:@"channelId"]]; \
-              } \
-              if ([(id)s respondsToSelector:NSSelectorFromString(@"reasonCode")]) { \
-                  out = [out stringByAppendingFormat:@"rc=%@ ", [(id)s valueForKey:@"reasonCode"]]; \
-              } \
-              LOGE([NSString stringWithFormat:@"pkt%d out %@", N, out]); \
+              if (N == 2 && (id)d && !ret) { FixSendack((id)s, (NSData *)d); ret = s; } \
+              if (!ret) ret = s; \
+              return ret; \
           }
           PKDEC(0) PKDEC(1) PKDEC(2) PKDEC(3) PKDEC(4) PKDEC(5)
 
