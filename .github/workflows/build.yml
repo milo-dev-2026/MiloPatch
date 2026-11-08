@@ -413,8 +413,40 @@ jobs:
               typedef void (*F)(id, SEL, id);
               ((F)[o methodForSelector:s])(o, s, v);
           }
+          // 校验属性声明类型，类型不符坚决不写，避免污染本地消息库
+          static BOOL PropClassIs(id o, NSString *prop, const char *want) {
+              objc_property_t pr = class_getProperty([o class], prop.UTF8String);
+              if (!pr) return NO;
+              const char *at = property_getAttributes(pr);
+              if (!at) return NO;
+              const char *t = strstr(at, "T@\"");
+              if (!t) return NO;
+              t += 3;
+              const char *e = strchr(t, '"');
+              if (!e || e <= t) return NO;
+              size_t wl = strlen(want);
+              return ((size_t)(e - t) == wl) && (strncmp(t, want, wl) == 0);
+          }
+          static void SetObjSafe(id pkt, NSString *sel, NSString *prop, id v, const char *want) {
+              if (!v) return;
+              if (!PropClassIs(pkt, prop, want)) {
+                  LOGE([NSString stringWithFormat:@"fixskip %@ type-mismatch", prop]);
+                  return;
+              }
+              SetStr(pkt, sel, v);
+          }
           static void FixRecv(id pkt, NSData *d) {
               if (![pkt respondsToSelector:@selector(setMessageId:)] || d.length < 24) return;
+              // 原始解码已成功的包不要覆写，防止把好数据改坏
+              @try {
+                  id cseq = [pkt valueForKey:@"messageSeq"];
+                  id cpay = [pkt valueForKey:@"payload"];
+                  if (cseq && [cseq respondsToSelector:@selector(unsignedIntValue)] &&
+                      [cseq unsignedIntValue] > 0 && cpay) {
+                      LOGE(@"fixrecv skip already-decoded");
+                      return;
+                  }
+              } @catch (__unused NSException *e) {}
               const uint8_t *p = d.bytes; NSUInteger n = d.length;
               NSUInteger k = 0; int found = 0;
               for (NSUInteger i = 8; i + 16 <= n; i++) {
@@ -429,11 +461,7 @@ jobs:
               for (int j = 0; j < 4; j++) ms = (ms << 8) | p[k + 8 + j];
               for (int j = 0; j < 4; j++) ts = (ts << 8) | p[k + 12 + j];
               NSUInteger po = k + 16;
-              NSString *pls = nil;
-              if (po < n) {
-                  NSData *pd = [d subdataWithRange:NSMakeRange(po, n - po)];
-                  pls = [[NSString alloc] initWithData:pd encoding:NSUTF8StringEncoding];
-              }
+              NSData *pld = po < n ? [d subdataWithRange:NSMakeRange(po, n - po)] : nil;
               NSMutableArray *hs = [NSMutableArray array];
               NSUInteger i = 1;
               while (i < k) {
@@ -446,24 +474,31 @@ jobs:
                       i += 1 + ln;
                   } else break;
               }
-              // 找 clientMsgNo：msgid 之前、33 字节串
+              // clientMsgNo：紧贴 msgid 之前的长度前缀字符串（实测 33 字节，前缀 0x21 在 k-34）
+              // 通用回溯：L 从 1..48，若 p[k-1-L]==L 且内容全为可打印 ASCII 即命中
               NSString *cmn = nil;
-              for (NSInteger j = (NSInteger)k - 33; j >= 1; j--) {
-                  if (p[j - 1] == 32) {
-                      NSString *s = [[NSString alloc] initWithData:[d subdataWithRange:NSMakeRange((NSUInteger)j, 32)] encoding:NSUTF8StringEncoding];
-                      if (s) { cmn = s; break; }
+              for (NSUInteger L = 1; L <= 48 && k >= L + 1; L++) {
+                  if (p[k - 1 - L] != L) continue;
+                  NSData *cd = [d subdataWithRange:NSMakeRange(k - L, L)];
+                  NSString *s = [[NSString alloc] initWithData:cd encoding:NSUTF8StringEncoding];
+                  if (!s) continue;
+                  BOOL okc = YES;
+                  for (NSUInteger q = 0; q < s.length; q++) {
+                      unichar ch2 = [s characterAtIndex:q];
+                      if (ch2 < 0x20 || ch2 > 0x7e) { okc = NO; break; }
                   }
+                  if (okc) { cmn = s; break; }
               }
               SetU64(pkt, @"setMessageId:", mid);
               SetU32(pkt, @"setMessageSeq:", ms);
               SetU32(pkt, @"setTimestamp:", ts);
               SetU8(pkt, @"setChannelType:", 1);
-              if (hs.count > 0) SetStr(pkt, @"setFromUid:", hs[0]);
-              if (hs.count > 1) SetStr(pkt, @"setChannelId:", hs[1]);
-              SetStr(pkt, @"setPayload:", pls);
-              SetStr(pkt, @"setClientMsgNo:", cmn);
+              if (hs.count > 0) SetObjSafe(pkt, @"setFromUid:", @"fromUid", hs[0], "NSString");
+              if (hs.count > 1) SetObjSafe(pkt, @"setChannelId:", @"channelId", hs[1], "NSString");
+              SetObjSafe(pkt, @"setPayload:", @"payload", pld, "NSData");
+              if (cmn) SetObjSafe(pkt, @"setClientMsgNo:", @"clientMsgNo", cmn, "NSString");
               LOGE([NSString stringWithFormat:@"fixrecv mid=%llu ms=%u ts=%u from=%@ ch=%@ cmn=%@ plen=%lu",
-                    mid, ms, ts, hs.count > 0 ? hs[0] : @"-", hs.count > 1 ? hs[1] : @"-", cmn ? cmn : @"-", (unsigned long)(n - po)]);
+                    mid, ms, ts, hs.count > 0 ? hs[0] : @"-", hs.count > 1 ? hs[1] : @"-", cmn ? cmn : @"-", (unsigned long)(pld ? pld.length : 0)]);
           }
 
           static void FixSendack(id pkt, NSData *d) {
