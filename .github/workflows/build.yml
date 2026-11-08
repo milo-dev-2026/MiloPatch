@@ -255,7 +255,8 @@ jobs:
           }
           static void (*o_csd)(id, SEL, id, id);
           static void h_csd(id self, SEL _cmd, id a, id b) {
-              LOGE([NSString stringWithFormat:@"%scallSendackDelegate cnt=%lu left=%@", kN, (unsigned long)PCnt(a), PDesc(b)]);
+              // left 极可能是整数而非对象，禁止对其发消息，只按数值打印
+              LOGE([NSString stringWithFormat:@"%scallSendackDelegate left=%lu", kN, (unsigned long)(uintptr_t)b]);
               o_csd(self, _cmd, a, b);
           }
           static id (*o_send)(id, SEL, id, BOOL);
@@ -266,14 +267,19 @@ jobs:
           static id (*o_save)(id, SEL, id, id, id, long, id, id, id);
           static id h_save(id self, SEL _cmd, id msg, id ch, id from, long st, id setting, id cmn, id topic) {
               id r = o_save(self, _cmd, msg, ch, from, st, setting, cmn, topic);
-              LOGE([NSString stringWithFormat:@"%ssaveMessage ret=%@ status=%ld cmn=%@", kN, PDesc(r), st, PDesc(cmn)]);
+              // ret 可能是 BOOL，禁止 PDesc；只按数值打印
+              LOGE([NSString stringWithFormat:@"%ssaveMessage ret=%lu status=%ld cmn=%@", kN, (unsigned long)(uintptr_t)r, st, PDesc(cmn)]);
               return r;
+          }
+          static NSUInteger PLen(id o) {
+              if (o && [o respondsToSelector:@selector(length)]) return (NSUInteger)[o length];
+              return 0;
           }
           static id (*o_dec)(id, SEL, id, id, id);
           static id h_dec(id self, SEL _cmd, id data, id key, id iv) {
               id r = o_dec(self, _cmd, data, key, iv);
-              LOGE([NSString stringWithFormat:@"%saesDecrypt in=%lu out=%@ keylen=%lu ivlen=%lu", kN,
-                    (unsigned long)PCnt(data), PDesc(r), (unsigned long)PCnt(key), (unsigned long)PCnt(iv)]);
+              LOGE([NSString stringWithFormat:@"%saesDecrypt in=%lu out=%lu keylen=%lu ivlen=%lu", kN,
+                    (unsigned long)PLen(data), (unsigned long)PLen(r), (unsigned long)PLen(key), (unsigned long)PLen(iv)]);
               return r;
           }
 
