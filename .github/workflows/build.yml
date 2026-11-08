@@ -297,6 +297,12 @@ jobs:
               return r;
           }
 
+          static void (*o_hmsgs)(id, SEL, id);
+          static void h_hmsgs(id self, SEL _cmd, id in) {
+              LOGE([NSString stringWithFormat:@"%shandleMessages cnt=%lu", kN, (unsigned long)PCnt(in)]);
+              o_hmsgs(self, _cmd, in);
+          }
+
           static void ShowMarker(void) {
               @try {
                   UIWindow *win = [UIApplication sharedApplication].keyWindow;
@@ -327,12 +333,14 @@ jobs:
                   Class *cs = (Class *)malloc(sizeof(Class) * cnt);
                   objc_getClassList(cs, cnt);
                   int dumped = 0;
-                  for (int i = 0; i < cnt && dumped < 40; i++) {
+                  for (int i = 0; i < cnt && dumped < 60; i++) {
                       const char *nm = class_getName(cs[i]);
-                      if (!nm || strncmp(nm, "WK", 2) != 0) continue;
-                      const char *hit = NULL;
-                      const char *keys[] = {"Sock", "Conn", "Chat", "Msg", "Message", "Packet", "Crypt", "Aes", "Proto", "Session", "Handler"};
-                      for (int k = 0; k < 11; k++) { if (strstr(nm, keys[k])) { hit = keys[k]; break; } }
+                      if (!nm) continue;
+                      const char *keys[] = {"Socket", "Sock", "Connection", "Conn", "Network", "FIM",
+                                            "TCP", "WS", "WebSocket", "Inner", "Proto", "Crypt", "AES",
+                                            "Aes", "IMKit", "IMConn", "Channel", "Packet", "Frame", "Codec"};
+                      int hit = 0;
+                      for (int k = 0; k < 20; k++) { if (strstr(nm, keys[k])) { hit = 1; break; } }
                       if (!hit) continue;
                       dumped++;
                       LOGE([NSString stringWithFormat:@"MILOPROBE cls %s", nm]);
@@ -343,8 +351,9 @@ jobs:
                           const char *s8 = sn.UTF8String;
                           if (!s8) continue;
                           if (strstr(s8, "ecv") || strstr(s8, "acket") || strstr(s8, "ack") ||
-                              strstr(s8, "ecrypt") || strstr(s8, "ecode") || strstr(s8, "ocket") ||
-                              strstr(s8, "onnect") || strstr(s8, "andle") || strstr(s8, "essage")) {
+                              strstr(s8, "ecrypt") || strstr(s8, "ecode") || strstr(s8, "onnect") ||
+                              strstr(s8, "andle") || strstr(s8, "essage") || strstr(s8, "ead") ||
+                              strstr(s8, "ata")) {
                               LOGE([NSString stringWithFormat:@"MILOPROBE   m %s %@", nm, sn]);
                           }
                       }
@@ -377,6 +386,7 @@ jobs:
               patch(cm, @selector(sendMessage:addRetryQueue:), (void *)h_send, (void **)&o_send);
               patch(cm, @selector(saveMessage:channel:fromUid:status:setting:clientMsgNo:topic:), (void *)h_save, (void **)&o_save);
               patch(aes, @selector(aesDecrypt:key:iv:), (void *)h_dec, (void **)&o_dec);
+              patch(cm, NSSelectorFromString(@"handleMessages:"), (void *)h_hmsgs, (void **)&o_hmsgs);
               LOGE(@"MILOPROBE init-done");
               DumpAPI();
               ScheduleFlush();
