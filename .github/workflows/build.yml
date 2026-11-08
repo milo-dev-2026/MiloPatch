@@ -378,6 +378,40 @@ jobs:
 
           #include <dlfcn.h>
 
+          static void SetU64(id o, NSString *nm, unsigned long long v) {
+              SEL s = NSSelectorFromString(nm);
+              if (![o respondsToSelector:s]) return;
+              typedef void (*F)(id, SEL, unsigned long long);
+              ((F)[o methodForSelector:s])(o, s, v);
+          }
+          static void SetU32(id o, NSString *nm, unsigned int v) {
+              SEL s = NSSelectorFromString(nm);
+              if (![o respondsToSelector:s]) return;
+              typedef void (*F)(id, SEL, unsigned int);
+              ((F)[o methodForSelector:s])(o, s, v);
+          }
+          static void SetU8(id o, NSString *nm, unsigned char v) {
+              SEL s = NSSelectorFromString(nm);
+              if (![o respondsToSelector:s]) return;
+              typedef void (*F)(id, SEL, unsigned char);
+              ((F)[o methodForSelector:s])(o, s, v);
+          }
+          static void FixSendack(id pkt, NSData *d) {
+              if (![pkt respondsToSelector:@selector(setClientSeq:)] || d.length < 17) return;
+              const uint8_t *p = d.bytes;
+              unsigned long long mid = 0;
+              for (int i = 0; i < 8; i++) mid = (mid << 8) | p[i];
+              unsigned int cs = 0, ms = 0;
+              for (int i = 8; i < 12; i++) cs = (cs << 8) | p[i];
+              for (int i = 12; i < 16; i++) ms = (ms << 8) | p[i];
+              unsigned char rc = p[16];
+              SetU64(pkt, @"setMessageId:", mid);
+              SetU32(pkt, @"setClientSeq:", cs);
+              SetU32(pkt, @"setMessageSeq:", ms);
+              SetU8(pkt, @"setReasonCode:", rc);
+              LOGE([NSString stringWithFormat:@"fixack mid=%llu cs=%u ms=%u rc=%u", mid, cs, ms, rc]);
+          }
+
           #define PKDEC(N) \
           static void (*o_pkd##N)(id, SEL, id, id); \
           static void h_pkd##N(id s, SEL c, id d, id hh) { \
@@ -394,6 +428,7 @@ jobs:
               } \
               LOGE([NSString stringWithFormat:@"pkt%d cls=%@ %@", N, cc, hx]); \
               if (o_pkd##N) o_pkd##N(s, c, d, hh); \
+              if (N == 2 && (id)d) FixSendack((id)s, (NSData *)d); \
               NSString *out = @""; \
               if ([(id)s respondsToSelector:NSSelectorFromString(@"fromUid")]) { \
                   out = [out stringByAppendingFormat:@"from=%@ ", [(id)s valueForKey:@"fromUid"]]; \
