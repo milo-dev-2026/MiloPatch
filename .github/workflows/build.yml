@@ -144,6 +144,7 @@ jobs:
                   || [n containsString:@"Rights"] || [n containsString:@"Uliao"];
           }
 
+          static void LOGE(NSString *s);
           static void (*o_present)(id, SEL, UIViewController *, BOOL, void (^)(void));
           static void h_present(id self, SEL _cmd, UIViewController *vc, BOOL anim, void (^comp)(void)) {
               @try {
