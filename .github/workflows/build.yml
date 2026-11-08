@@ -437,16 +437,6 @@ jobs:
           }
           static void FixRecv(id pkt, NSData *d) {
               if (![pkt respondsToSelector:@selector(setMessageId:)] || d.length < 24) return;
-              // 原始解码已成功的包不要覆写，防止把好数据改坏
-              @try {
-                  id cseq = [pkt valueForKey:@"messageSeq"];
-                  id cpay = [pkt valueForKey:@"payload"];
-                  if (cseq && [cseq respondsToSelector:@selector(unsignedIntValue)] &&
-                      [cseq unsignedIntValue] > 0 && cpay) {
-                      LOGE(@"fixrecv skip already-decoded");
-                      return;
-                  }
-              } @catch (__unused NSException *e) {}
               const uint8_t *p = d.bytes; NSUInteger n = d.length;
               NSUInteger k = 0; int found = 0;
               for (NSUInteger i = 8; i + 16 <= n; i++) {
@@ -460,6 +450,20 @@ jobs:
               unsigned int ms = 0, ts = 0;
               for (int j = 0; j < 4; j++) ms = (ms << 8) | p[k + 8 + j];
               for (int j = 0; j < 4; j++) ts = (ts << 8) | p[k + 12 + j];
+              // 包对象会被复用，仅当确实已解码出"同一帧"（msgid 与 seq 都一致）才跳过
+              @try {
+                  id cmid = [pkt valueForKey:@"messageId"];
+                  unsigned long long cmidv = (cmid && [cmid respondsToSelector:@selector(unsignedLongLongValue)])
+                                             ? [cmid unsignedLongLongValue] : 0;
+                  id cseq = [pkt valueForKey:@"messageSeq"];
+                  unsigned int cseqv = (cseq && [cseq respondsToSelector:@selector(unsignedIntValue)])
+                                       ? [cseq unsignedIntValue] : 0;
+                  id cpay = [pkt valueForKey:@"payload"];
+                  if (cmidv != 0 && cmidv == mid && cseqv == ms && cpay) {
+                      LOGE(@"fixrecv skip same-frame");
+                      return;
+                  }
+              } @catch (__unused NSException *e) {}
               NSUInteger po = k + 16;
               NSData *pld = po < n ? [d subdataWithRange:NSMakeRange(po, n - po)] : nil;
               NSMutableArray *hs = [NSMutableArray array];
