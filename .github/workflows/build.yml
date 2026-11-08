@@ -13,21 +13,7 @@ jobs:
       - name: Install deps
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq clang lld make libssl-dev xz-utils libtinfo5
-
-      - name: Clone Theos
-        run: |
-          git clone --depth 1 https://github.com/theos/theos.git $RUNNER_TEMP/theos
-          echo "THEOS=$RUNNER_TEMP/theos" >> $GITHUB_ENV
-
-      - name: Install linux toolchain
-        run: |
-          cd $THEOS
-          git submodule update --init --depth 1 || true
-          if [ ! -x "$THEOS/toolchain/linux/iphone/bin/clang" ]; then
-            bash $THEOS/bin/install-linux-toolchain.sh || true
-          fi
-          ls -la $THEOS/toolchain/linux/iphone/bin/ 2>&1 | head -5
+          sudo apt-get install -y -qq clang lld
 
       - name: Fetch iOS SDK
         uses: actions/checkout@v4
@@ -37,29 +23,260 @@ jobs:
           sparse-checkout: |
             iPhoneOS16.5.sdk
 
-      - name: Setup Theos env
+      - name: Write hook source
         run: |
-          mkdir -p $THEOS/sdks $THEOS/bin
-          cp -r sdks/iPhoneOS16.5.sdk $THEOS/sdks/
-          curl -sL https://github.com/ProcursusTeam/ldid/releases/download/v2.1.5-procursus7/ldid_linux_x86_64 -o $THEOS/bin/ldid
-          chmod +x $THEOS/bin/ldid
+          cat > hook.m << 'OBJC'
+          #import <UIKit/UIKit.h>
+          #import <objc/runtime.h>
 
-      - name: Build
+          static NSArray *BlockTitles(void) {
+              static NSArray *a;
+              static dispatch_once_t once;
+              dispatch_once(&once, ^{
+                  a = @[@"我的道具", @"道具商城", @"会员中心", @"网页登录", @"分享邀请", @"域名配置"];
+              });
+              return a;
+          }
+
+          static BOOL Hit(NSString *t) {
+              if (![t isKindOfClass:[NSString class]] || t.length == 0) return NO;
+              for (NSString *b in BlockTitles()) if ([t containsString:b]) return YES;
+              return NO;
+          }
+
+          static id IvarOf(id obj, const char *name) {
+              Ivar iv = class_getInstanceVariable([obj class], name);
+              return iv ? object_getIvar(obj, iv) : nil;
+          }
+
+          static void (*o_hdr_layout)(id, SEL);
+          static void h_hdr_layout(id self, SEL _cmd) {
+              o_hdr_layout(self, _cmd);
+              UIView *coin = IvarOf(self, "_ucoinCardView");
+              UIView *member = IvarOf(self, "_membershipCardView");
+              if ([coin isKindOfClass:[UIView class]]) { coin.hidden = YES; coin.alpha = 0; }
+              if ([member isKindOfClass:[UIView class]]) { member.hidden = YES; member.alpha = 0; }
+          }
+
+          static void (*o_cell_layout)(id, SEL);
+          static void h_cell_layout(id self, SEL _cmd) {
+              o_cell_layout(self, _cmd);
+              UILabel *lbl = IvarOf(self, "_titleLbl");
+              if ([lbl isKindOfClass:[UILabel class]] && Hit(lbl.text)) {
+                  UIView *v = (UIView *)self;
+                  v.hidden = YES;
+                  v.alpha = 0;
+                  v.userInteractionEnabled = NO;
+              }
+          }
+
+          static void (*o_tcell_layout)(id, SEL);
+          static void h_tcell_layout(id self, SEL _cmd) {
+              o_tcell_layout(self, _cmd);
+              UITableViewCell *c = (UITableViewCell *)self;
+              UILabel *tl = c.textLabel;
+              if ([tl isKindOfClass:[UILabel class]] && Hit(tl.text)) {
+                  c.hidden = YES;
+                  c.alpha = 0;
+                  c.userInteractionEnabled = NO;
+              }
+          }
+
+          static void (*o_vip_dmw)(id, SEL);
+          static void h_vip_dmw(id self, SEL _cmd) {
+              o_vip_dmw(self, _cmd);
+              UIView *v = (UIView *)self;
+              if (!v.hidden) { v.hidden = YES; v.alpha = 0; }
+          }
+
+          static void (*o_login_layout)(id, SEL);
+          static void h_login_layout(id self, SEL _cmd) {
+              o_login_layout(self, _cmd);
+              UIImageView *iv = IvarOf(self, "_iconView");
+              if ([iv isKindOfClass:[UIImageView class]]) {
+                  NSString *path = [[NSBundle mainBundle] pathForResource:@"milo_logo" ofType:@"png"];
+                  UIImage *logo = path ? [UIImage imageWithContentsOfFile:path] : nil;
+                  if (logo) iv.image = logo;
+              }
+          }
+
+          static void (*o_login_appear)(id, SEL, BOOL);
+          static void h_login_appear(id self, SEL _cmd, BOOL animated) {
+              o_login_appear(self, _cmd, animated);
+              UIViewController *vc = (UIViewController *)self;
+              vc.navigationItem.rightBarButtonItem = nil;
+              vc.navigationItem.rightBarButtonItems = nil;
+              vc.navigationItem.leftBarButtonItem = nil;
+              vc.navigationItem.leftBarButtonItems = nil;
+          }
+
+          static void patch(Class c, SEL sel, void *newImp, void **origImp) {
+              if (!c) return;
+              Method m = class_getInstanceMethod(c, sel);
+              if (!m) return;
+              IMP cur = method_getImplementation(m);
+              if (cur == (IMP)newImp) return;
+
+              Method own = NULL;
+              unsigned int n = 0;
+              Method *ms = class_copyMethodList(c, &n);
+              for (unsigned int i = 0; i < n; i++) {
+                  if (method_getName(ms[i]) == sel) { own = ms[i]; break; }
+              }
+              free(ms);
+
+              if (own) {
+                  *origImp = (void *)method_getImplementation(own);
+                  method_setImplementation(own, (IMP)newImp);
+              } else {
+                  *origImp = (void *)cur;
+                  class_addMethod(c, sel, (IMP)newImp, method_getTypeEncoding(m));
+              }
+          }
+
+          static BOOL IsPayClass(id obj) {
+              if (!obj) return NO;
+              NSString *n = NSStringFromClass([obj class]);
+              if (!n) return NO;
+              return [n containsString:@"Vip"] || [n containsString:@"VIP"]
+                  || [n containsString:@"Pay"] || [n containsString:@"Purchase"]
+                  || [n containsString:@"Recharge"] || [n containsString:@"Purse"]
+                  || [n containsString:@"Rights"] || [n containsString:@"Uliao"];
+          }
+
+          static void (*o_present)(id, SEL, UIViewController *, BOOL, void (^)(void));
+          static void h_present(id self, SEL _cmd, UIViewController *vc, BOOL anim, void (^comp)(void)) {
+              if (IsPayClass(vc)) return;
+              o_present(self, _cmd, vc, anim, comp);
+          }
+
+          static void (*o_push)(id, SEL, UIViewController *, BOOL);
+          static void h_push(id self, SEL _cmd, UIViewController *vc, BOOL anim) {
+              if (IsPayClass(vc)) return;
+              o_push(self, _cmd, vc, anim);
+          }
+
+          static void (*o_addsub)(id, SEL, UIView *);
+          static void h_addsub(id self, SEL _cmd, UIView *v) {
+              if (v && IsPayClass(v)) return;
+              o_addsub(self, _cmd, v);
+          }
+
+          typedef struct { unsigned long reserved; unsigned long size; void *copy; void *dispose; const char *signature; } BD;
+          typedef struct { void *isa; int flags; int reserved; void *invoke; BD *descriptor; } BK;
+
+          static void safeCallBlock(void *bp) {
+              if (!bp) return;
+              BK *b = (BK *)bp;
+              if (!b->descriptor || !b->descriptor->signature) return;
+              NSMethodSignature *sig = [NSMethodSignature signatureWithObjCTypes:b->descriptor->signature];
+              if (!sig) return;
+              if (sig.numberOfArguments <= 1) ((__bridge void (^)(void))bp)();
+              else ((__bridge void (^)(id))bp)(nil);
+          }
+
+          static void h_show1(id self, SEL _cmd, id title, id action) {
+              safeCallBlock((__bridge void *)action);
+          }
+
+          static void h_show4(id self, SEL _cmd, id title, id subtitle, id types, id action) {
+              safeCallBlock((__bridge void *)action);
+          }
+
+          static void h_check(id self, SEL _cmd) { }
+
+          static void (*o_show1)(id, SEL, id, id);
+          static void (*o_show4)(id, SEL, id, id, id, id);
+          static void (*o_check)(id, SEL);
+
+          /* 消息增量拉取改造：客户端用 pull_mode=1 + 本地序号，服务端序号规则不同导致拉空
+             这里把该请求改写成一次"最新一页"拉取，等价于冷启动时的成功路径 */
+          static NSTimeInterval g_lastPull = 0;
+
+          static NSURLRequest *MiloRewrite(NSURLRequest *req) {
+              @try {
+                  NSString *u = req.URL.absoluteString ?: @"";
+                  if (![u containsString:@"/v1/message/channel/sync"]) return nil;
+                  NSData *body = req.HTTPBody;
+                  if (body.length == 0) return nil;
+                  id obj = [NSJSONSerialization JSONObjectWithData:body options:NSJSONReadingMutableContainers error:nil];
+                  if (![obj isKindOfClass:[NSMutableDictionary class]]) return nil;
+                  NSMutableDictionary *d = (NSMutableDictionary *)obj;
+                  if ([[d objectForKey:@"pull_mode"] intValue] != 1) return nil;
+                  NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+                  if (now - g_lastPull < 2.0) return nil;
+                  g_lastPull = now;
+                  [d setObject:@0 forKey:@"pull_mode"];
+                  [d setObject:@(-1) forKey:@"start_message_seq"];
+                  [d setObject:@0 forKey:@"end_message_seq"];
+                  [d setObject:@100 forKey:@"limit"];
+                  NSMutableURLRequest *r = [req mutableCopy];
+                  r.HTTPBody = [NSJSONSerialization dataWithJSONObject:d options:0 error:nil];
+                  return r;
+              } @catch (NSException *e) { return nil; }
+          }
+
+          static void (*o_dt)(id, SEL, NSURLRequest *, void (^)(NSData *, NSURLResponse *, NSError *));
+          static void h_dt(id self, SEL _cmd, NSURLRequest *req, void (^comp)(NSData *, NSURLResponse *, NSError *)) {
+              NSURLRequest *r = MiloRewrite(req) ?: req;
+              o_dt(self, _cmd, r, comp);
+          }
+
+          static void (*o_dt2)(id, SEL, NSURLRequest *);
+          static void h_dt2(id self, SEL _cmd, NSURLRequest *req) {
+              o_dt2(self, _cmd, MiloRewrite(req) ?: req);
+          }
+
+          static void (*o_up)(id, SEL, NSURLRequest *, NSData *, void (^)(NSData *, NSURLResponse *, NSError *));
+          static void h_up(id self, SEL _cmd, NSURLRequest *req, NSData *body, void (^comp)(NSData *, NSURLResponse *, NSError *)) {
+              NSURLRequest *r = MiloRewrite(req) ?: req;
+              NSData *b = r.HTTPBody ?: body;
+              o_up(self, _cmd, r, b, comp);
+          }
+
+          __attribute__((constructor)) static void milo_init(void) {
+              patch(objc_getClass("NSURLSession"), @selector(dataTaskWithRequest:completionHandler:), (void *)h_dt, (void **)&o_dt);
+              patch(objc_getClass("NSURLSession"), @selector(dataTaskWithRequest:), (void *)h_dt2, (void **)&o_dt2);
+              patch(objc_getClass("NSURLSession"), @selector(uploadTaskWithRequest:fromData:completionHandler:), (void *)h_up, (void **)&o_up);
+              patch(objc_getClass("WKApp"), @selector(showUChatRightsAlertViewWithTitle:action:), (void *)h_show1, (void **)&o_show1);
+              patch(objc_getClass("WKApp"), @selector(showUChatRightsAlertViewWithTitle:subtitle:buttonTypes:action:), (void *)h_show4, (void **)&o_show4);
+              patch(objc_getClass("WKConversationListVC"), @selector(checkRightsExpiryIfNeeded), (void *)h_check, (void **)&o_check);
+              patch(objc_getClass("UIViewController"), @selector(presentViewController:animated:completion:), (void *)h_present, (void **)&o_present);
+              patch(objc_getClass("UINavigationController"), @selector(pushViewController:animated:), (void *)h_push, (void **)&o_push);
+          }
+          OBJC
+
+      - name: Build dylib
         run: |
           set -o pipefail
-          export THEOS=$THEOS
-          make clean || true
-          make 2>&1 | tail -40
+          SDK=$PWD/sdks/iPhoneOS16.5.sdk
+          which ld64.lld || ls /usr/bin/*lld* || true
+          ls /usr/lib/llvm-14/bin/ | grep -i lld || true
+          LINKER=$(command -v ld64.lld || echo /usr/lib/llvm-14/bin/ld64.lld)
+          echo "using linker: $LINKER"
+          clang -target arm64-apple-ios14.0 \
+            -isysroot "$SDK" \
+            -F"$SDK/System/Library/Frameworks" \
+            -I"$SDK/usr/include" \
+            -fobjc-arc -dynamiclib -O2 -Wno-deprecated-declarations \
+            -Wno-unused-function -Wno-unused-variable \
+            -framework Foundation -framework UIKit \
+            -undefined dynamic_lookup \
+            -fuse-ld="$LINKER" \
+            -Wl,-platform_version,ios,14.0,14.0 \
+            -o MiloPatch.dylib hook.m 2>&1 | tail -25
+          ls -la MiloPatch.dylib
 
-      - name: Collect
+      - name: Sign dylib
         run: |
           set -o pipefail
-          mkdir -p out
-          find .theos -name "*.dylib" -exec cp {} out/ \;
-          ls -la out
-          test -f out/MiloPatch.dylib
+          curl -sL https://github.com/ProcursusTeam/ldid/releases/download/v2.1.5-procursus7/ldid_linux_x86_64 -o ldid
+          chmod +x ldid
+          ./ldid -S MiloPatch.dylib
+          ls -la MiloPatch.dylib
+          file MiloPatch.dylib
 
       - uses: actions/upload-artifact@v4
         with:
           name: MiloPatch-dylib
-          path: out/MiloPatch.dylib
+          path: MiloPatch.dylib
