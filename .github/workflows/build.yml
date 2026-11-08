@@ -283,6 +283,17 @@ jobs:
               id r = o_save(self, _cmd, msg, ch, from, st, setting, cmn, topic);
               // ret 可能是 BOOL，禁止 PDesc；只按数值打印
               LOGE([NSString stringWithFormat:@"%ssaveMessage ret=%lu status=%ld cmn=%@", kN, (unsigned long)(uintptr_t)r, st, PDesc(cmn)]);
+              if (r && msg) {
+                  dispatch_async(dispatch_get_main_queue(), ^{
+                      @try {
+                          SEL sel = @selector(callRecvMessagesDelegate:);
+                          if ([self respondsToSelector:sel]) {
+                              typedef void (*F)(id, SEL, id);
+                              ((F)[self methodForSelector:sel])(self, sel, @[msg]);
+                          }
+                      } @catch (__unused NSException *e) {}
+                  });
+              }
               return r;
           }
           static NSUInteger PLen(id o) {
