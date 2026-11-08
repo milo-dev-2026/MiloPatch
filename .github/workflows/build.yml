@@ -435,22 +435,88 @@ jobs:
               }
               SetStr(pkt, sel, v);
           }
+          static NSString *RdStr(const uint8_t *p, NSUInteger n, NSUInteger *pos) {
+              if (*pos + 2 > n) return nil;
+              NSUInteger ln = ((NSUInteger)p[*pos] << 8) | p[*pos + 1];
+              *pos += 2;
+              if (*pos + ln > n) return nil;
+              NSString *s = ln ? [[NSString alloc] initWithBytes:p + *pos length:ln encoding:NSUTF8StringEncoding] : @"";
+              if (!s) return nil;
+              *pos += ln;
+              return s;
+          }
+          static unsigned long long RdU64(const uint8_t *p, NSUInteger i) {
+              unsigned long long v = 0;
+              for (int j = 0; j < 8; j++) v = (v << 8) | p[i + j];
+              return v;
+          }
+          static unsigned int RdU32(const uint8_t *p, NSUInteger i) {
+              unsigned int v = 0;
+              for (int j = 0; j < 4; j++) v = (v << 8) | p[i + j];
+              return v;
+          }
+          static void HexDump(NSString *tag, NSData *d, NSUInteger maxb) {
+              const uint8_t *p = d.bytes;
+              NSUInteger nn = MIN(d.length, maxb);
+              NSMutableString *hs = [NSMutableString stringWithCapacity:nn * 2 + 8];
+              for (NSUInteger i = 0; i < nn; i++) [hs appendFormat:@"%02x", p[i]];
+              LOGE([NSString stringWithFormat:@"fixrecv-hex %@ n=%lu %@", tag, (unsigned long)d.length, hs]);
+          }
           static NSData *DecryptPayload(NSData *pld);
           static void FixRecv(id pkt, NSData *d) {
               if (![pkt respondsToSelector:@selector(setMessageId:)] || d.length < 24) return;
               const uint8_t *p = d.bytes; NSUInteger n = d.length;
-              NSUInteger k = 0; int found = 0;
-              for (NSUInteger i = 8; i + 16 <= n; i++) {
-                  unsigned long long v = 0;
-                  for (int j = 0; j < 8; j++) v = (v << 8) | p[i + j];
-                  if ((v >> 56) == 0x1d && (v & 0xFFFF) == 0) { k = i; found = 1; break; }
-              }
-              if (!found) { LOGE(@"fixrecv no-msgid"); return; }
+              // 严格布局(已由真实帧 223 字节精确验证): setting(1) msgKey(u16str) fromUid(u16str) channelId(u16str) channelType(1) expire(4) clientMsgNo(u16str) msgid(8) seq(4) ts(4) payload
+              NSString *from = nil, *ch = nil, *cmn = nil;
               unsigned long long mid = 0;
-              for (int j = 0; j < 8; j++) mid = (mid << 8) | p[k + j];
-              unsigned int ms = 0, ts = 0;
-              for (int j = 0; j < 4; j++) ms = (ms << 8) | p[k + 8 + j];
-              for (int j = 0; j < 4; j++) ts = (ts << 8) | p[k + 12 + j];
+              unsigned int ms = 0, ts = 0, chType = 1;
+              NSData *pld = nil;
+              BOOL ok = NO;
+              NSUInteger pos = 1;
+              NSString *msgKey = RdStr(p, n, &pos);
+              if (msgKey) from = RdStr(p, n, &pos);
+              if (from) ch = RdStr(p, n, &pos);
+              if (ch && pos + 5 <= n) {
+                  chType = p[pos]; pos += 1;
+                  pos += 4; // expire
+                  cmn = RdStr(p, n, &pos);
+                  if (cmn && pos + 16 <= n) {
+                      mid = RdU64(p, pos);
+                      ms = RdU32(p, pos + 8);
+                      ts = RdU32(p, pos + 12);
+                      if ((mid >> 56) == 0x1d) {
+                          ok = YES;
+                          pld = pos + 16 < n ? [d subdataWithRange:NSMakeRange(pos + 16, n - pos - 16)] : [NSData data];
+                      }
+                  }
+              }
+              if (!ok) {
+                  // 回退：msgid 锚点扫描 + clientMsgNo 回溯（旧逻辑）
+                  HexDump(@"strict-fail", d, 120);
+                  from = nil; ch = nil; cmn = nil; chType = 1;
+                  NSUInteger k = 0; int found = 0;
+                  for (NSUInteger i = 8; i + 16 <= n; i++) {
+                      if ((RdU64(p, i) >> 56) == 0x1d && (RdU64(p, i) & 0xFFFF) == 0) { k = i; found = 1; break; }
+                  }
+                  if (!found) { LOGE(@"fixrecv no-msgid"); return; }
+                  mid = RdU64(p, k);
+                  ms = RdU32(p, k + 8);
+                  ts = RdU32(p, k + 12);
+                  NSUInteger po = k + 16;
+                  pld = po < n ? [d subdataWithRange:NSMakeRange(po, n - po)] : nil;
+                  for (NSUInteger L = 1; L <= 48 && k >= L + 1; L++) {
+                      if (p[k - 1 - L] != L) continue;
+                      NSData *cd = [d subdataWithRange:NSMakeRange(k - L, L)];
+                      NSString *s = [[NSString alloc] initWithData:cd encoding:NSUTF8StringEncoding];
+                      if (!s) continue;
+                      BOOL okc = YES;
+                      for (NSUInteger q = 0; q < s.length; q++) {
+                          unichar ch2 = [s characterAtIndex:q];
+                          if (ch2 < 0x20 || ch2 > 0x7e) { okc = NO; break; }
+                      }
+                      if (okc) { cmn = s; break; }
+                  }
+              }
               // 包对象会被复用，仅当确实已解码出"同一帧"（msgid 与 seq 都一致）才跳过
               @try {
                   id cmid = [pkt valueForKey:@"messageId"];
@@ -465,54 +531,22 @@ jobs:
                       return;
                   }
               } @catch (__unused NSException *e) {}
-              NSUInteger po = k + 16;
-              NSData *pld = po < n ? [d subdataWithRange:NSMakeRange(po, n - po)] : nil;
-              NSMutableArray *hs = [NSMutableArray array];
-              NSUInteger i = 1;
-              while (i < k) {
-                  NSUInteger ln = p[i];
-                  if (ln == 32 && i + 33 <= n) {
-                      NSString *s = [[NSString alloc] initWithData:[d subdataWithRange:NSMakeRange(i + 1, 32)] encoding:NSUTF8StringEncoding];
-                      if (s) [hs addObject:s];
-                      i += 33;
-                  } else if (ln < 40) {
-                      i += 1 + ln;
-                  } else break;
-              }
-              // clientMsgNo：紧贴 msgid 之前的长度前缀字符串（实测 33 字节，前缀 0x21 在 k-34）
-              // 通用回溯：L 从 1..48，若 p[k-1-L]==L 且内容全为可打印 ASCII 即命中
-              NSString *cmn = nil;
-              for (NSUInteger L = 1; L <= 48 && k >= L + 1; L++) {
-                  if (p[k - 1 - L] != L) continue;
-                  NSData *cd = [d subdataWithRange:NSMakeRange(k - L, L)];
-                  NSString *s = [[NSString alloc] initWithData:cd encoding:NSUTF8StringEncoding];
-                  if (!s) continue;
-                  BOOL okc = YES;
-                  for (NSUInteger q = 0; q < s.length; q++) {
-                      unichar ch2 = [s characterAtIndex:q];
-                      if (ch2 < 0x20 || ch2 > 0x7e) { okc = NO; break; }
-                  }
-                  if (okc) { cmn = s; break; }
-              }
               SetU64(pkt, @"setMessageId:", mid);
               SetU32(pkt, @"setMessageSeq:", ms);
               SetU32(pkt, @"setTimestamp:", ts);
-              SetU8(pkt, @"setChannelType:", 1);
+              SetU8(pkt, @"setChannelType:", chType);
               // 字段顺序(对齐开源 SDK decodeLM)：setting, msgKey, fromUid, channelId, channelType, expire, clientMsgNo, msgId, seq, ts, payload
-              // hs[0] 是 msgKey(md5 校验串)，绝不是 fromUid！
-              NSString *from = nil, *ch = nil;
-              if (hs.count >= 3) { from = hs[1]; ch = hs[2]; }
-              else if (hs.count == 2) { from = hs[0]; ch = hs[1]; }
-              if (from) SetObjSafe(pkt, @"setFromUid:", @"fromUid", from, "NSString");
-              if (ch) SetObjSafe(pkt, @"setChannelId:", @"channelId", ch, "NSString");
+              // 严格解析时 hs[0]=msgKey 被跳过；解析失败必须显式置空串，避免复用对象残留旧值串频道
+              SetObjSafe(pkt, @"setFromUid:", @"fromUid", from ? from : @"", "NSString");
+              SetObjSafe(pkt, @"setChannelId:", @"channelId", ch ? ch : @"", "NSString");
               // payload 是 AES 密文，必须经 WKSecurityManager 解密成明文 JSON
               NSData *plain = DecryptPayload(pld);
               NSData *finalPayload = plain ? plain : pld;
               SetObjSafe(pkt, @"setPayload:", @"payload", finalPayload, "NSData");
               if (cmn) SetObjSafe(pkt, @"setClientMsgNo:", @"clientMsgNo", cmn, "NSString");
-              LOGE([NSString stringWithFormat:@"fixrecv mid=%llu ms=%u ts=%u from=%@ ch=%@ cmn=%@ plen=%lu dec=%d",
-                    mid, ms, ts, from ? from : @"-", ch ? ch : @"-", cmn ? cmn : @"-",
-                    (unsigned long)(finalPayload ? finalPayload.length : 0), plain ? 1 : 0]);
+              LOGE([NSString stringWithFormat:@"fixrecv mid=%llu ms=%u ts=%u ct=%u from=%@ ch=%@ cmn=%@ plen=%lu dec=%d strict=%d",
+                    mid, ms, ts, chType, from ? from : @"-", ch ? ch : @"-", cmn ? cmn : @"-",
+                    (unsigned long)(finalPayload ? finalPayload.length : 0), plain ? 1 : 0, ok ? 1 : 0]);
           }
 
           static void FixSendack(id pkt, NSData *d) {
