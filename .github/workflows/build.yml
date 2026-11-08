@@ -312,6 +312,49 @@ jobs:
               } @catch (NSException *e) {}
           }
 
+          static void DumpAPI(void) {
+              @autoreleasepool {
+                  Class cm = objc_getClass("WKChatManager");
+                  unsigned int n = 0;
+                  Method *ms = class_copyMethodList(cm, &n);
+                  LOGE([NSString stringWithFormat:@"MILOPROBE cm=%u methods", n]);
+                  for (unsigned int i = 0; i < n; i++) {
+                      LOGE([NSString stringWithFormat:@"MILOPROBE cmm %@", NSStringFromSelector(method_getName(ms[i]))]);
+                  }
+                  free(ms);
+
+                  int cnt = objc_getClassList(NULL, 0);
+                  Class *cs = (Class *)malloc(sizeof(Class) * cnt);
+                  objc_getClassList(cs, cnt);
+                  int dumped = 0;
+                  for (int i = 0; i < cnt && dumped < 40; i++) {
+                      const char *nm = class_getName(cs[i]);
+                      if (!nm || strncmp(nm, "WK", 2) != 0) continue;
+                      const char *hit = NULL;
+                      const char *keys[] = {"Sock", "Conn", "Chat", "Msg", "Message", "Packet", "Crypt", "Aes", "Proto", "Session", "Handler"};
+                      for (int k = 0; k < 11; k++) { if (strstr(nm, keys[k])) { hit = keys[k]; break; } }
+                      if (!hit) continue;
+                      dumped++;
+                      LOGE([NSString stringWithFormat:@"MILOPROBE cls %s", nm]);
+                      unsigned int mn = 0;
+                      Method *m2 = class_copyMethodList(cs[i], &mn);
+                      for (unsigned int j = 0; j < mn; j++) {
+                          NSString *sn = NSStringFromSelector(method_getName(m2[j]));
+                          const char *s8 = sn.UTF8String;
+                          if (!s8) continue;
+                          if (strstr(s8, "ecv") || strstr(s8, "acket") || strstr(s8, "ack") ||
+                              strstr(s8, "ecrypt") || strstr(s8, "ecode") || strstr(s8, "ocket") ||
+                              strstr(s8, "onnect") || strstr(s8, "andle") || strstr(s8, "essage")) {
+                              LOGE([NSString stringWithFormat:@"MILOPROBE   m %s %@", nm, sn]);
+                          }
+                      }
+                      free(m2);
+                  }
+                  free(cs);
+                  LOGE([NSString stringWithFormat:@"MILOPROBE dump-done classes=%d", dumped]);
+              }
+          }
+
           static void ProbeInit(void) {
               g_buf = [NSMutableArray array];
               g_lock = [NSLock new];
@@ -335,6 +378,7 @@ jobs:
               patch(cm, @selector(saveMessage:channel:fromUid:status:setting:clientMsgNo:topic:), (void *)h_save, (void **)&o_save);
               patch(aes, @selector(aesDecrypt:key:iv:), (void *)h_dec, (void **)&o_dec);
               LOGE(@"MILOPROBE init-done");
+              DumpAPI();
               ScheduleFlush();
           }
 
