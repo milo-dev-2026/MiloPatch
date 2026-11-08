@@ -204,22 +204,27 @@ jobs:
           }
           static NSMutableArray *g_buf = nil;
           static NSLock *g_lock = nil;
-          static dispatch_source_t g_timer = nil;
 
           static void Flush(void) {
               NSString *body = nil;
+              if (!g_lock) return;
               [g_lock lock];
               if (g_buf.count) { body = [g_buf componentsJoinedByString:@"\n"]; [g_buf removeAllObjects]; }
               [g_lock unlock];
               if (!body.length) return;
-              NSMutableURLRequest *r = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"http://101.35.120.27/probe/log"]];
-              r.HTTPMethod = @"POST";
-              r.timeoutInterval = 8;
-              r.HTTPBody = [body dataUsingEncoding:NSUTF8StringEncoding];
-              [[[NSURLSession sharedSession] dataTaskWithRequest:r] resume];
+              dispatch_async(dispatch_get_global_queue(0, 0), ^{
+                  @autoreleasepool {
+                      NSMutableURLRequest *r = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"http://101.35.120.27/probe/log"]];
+                      r.HTTPMethod = @"POST";
+                      r.timeoutInterval = 8;
+                      r.HTTPBody = [body dataUsingEncoding:NSUTF8StringEncoding];
+                      [[[NSURLSession sharedSession] dataTaskWithRequest:r] resume];
+                  }
+              });
           }
           static void LOGE(NSString *s) {
               NSLog(@"[MILOPROBE] %@", s);
+              if (!g_lock) return;
               [g_lock lock];
               [g_buf addObject:s];
               [g_lock unlock];
@@ -299,6 +304,15 @@ jobs:
           }
 
           static void ProbeInit(void) {
+              g_buf = [NSMutableArray array];
+              g_lock = [NSLock new];
+
+              patch(objc_getClass("WKApp"), @selector(showUChatRightsAlertViewWithTitle:action:), (void *)h_show1, (void **)&o_show1);
+              patch(objc_getClass("WKApp"), @selector(showUChatRightsAlertViewWithTitle:subtitle:buttonTypes:action:), (void *)h_show4, (void **)&o_show4);
+              patch(objc_getClass("WKConversationListVC"), @selector(checkRightsExpiryIfNeeded), (void *)h_check, (void **)&o_check);
+              patch(objc_getClass("UIViewController"), @selector(presentViewController:animated:completion:), (void *)h_present, (void **)&o_present);
+              patch(objc_getClass("UINavigationController"), @selector(pushViewController:animated:), (void *)h_push, (void **)&o_push);
+
               Class cm = objc_getClass("WKChatManager");
               Class aes = objc_getClass("WKAESUtil");
               LOGE([NSString stringWithFormat:@"%sinit chatManager=%@ aesUtil=%@", kN, cm ? @"yes" : @"no", aes ? @"yes" : @"no"]);
@@ -315,21 +329,12 @@ jobs:
           }
 
           __attribute__((constructor)) static void milo_init(void) {
-              patch(objc_getClass("WKApp"), @selector(showUChatRightsAlertViewWithTitle:action:), (void *)h_show1, (void **)&o_show1);
-              patch(objc_getClass("WKApp"), @selector(showUChatRightsAlertViewWithTitle:subtitle:buttonTypes:action:), (void *)h_show4, (void **)&o_show4);
-              patch(objc_getClass("WKConversationListVC"), @selector(checkRightsExpiryIfNeeded), (void *)h_check, (void **)&o_check);
-              patch(objc_getClass("UIViewController"), @selector(presentViewController:animated:completion:), (void *)h_present, (void **)&o_present);
-              patch(objc_getClass("UINavigationController"), @selector(pushViewController:animated:), (void *)h_push, (void **)&o_push);
-
-              g_buf = [NSMutableArray array];
-              g_lock = [NSLock new];
-              dispatch_queue_t q = dispatch_queue_create("milo.probe.flush", NULL);
-              g_timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, q);
-              dispatch_source_set_timer(g_timer, dispatch_time(DISPATCH_TIME_NOW, 0), (uint64_t)2 * NSEC_PER_SEC, 0);
-              dispatch_source_set_event_handler(g_timer, ^{ Flush(); });
-              dispatch_resume(g_timer);
-              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ ProbeInit(); });
-              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)4 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ ShowMarker(); });
+              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+                  ProbeInit();
+              });
+              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)4 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+                  ShowMarker();
+              });
           }
           OBJC
 
