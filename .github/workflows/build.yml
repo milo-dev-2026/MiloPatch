@@ -811,13 +811,37 @@ jobs:
                       id msg = nil;
                       if ([extra isKindOfClass:[NSDictionary class]]) msg = [(NSDictionary *)extra objectForKey:@"message"];
                       if (!msg && extra) msg = extra;
+                      id cont = nil;
                       if (msg) {
                           DumpProps(msg, @"ybmsg");
-                          id cont = nil;
                           @try { cont = [msg valueForKey:@"content"]; } @catch (NSException *e) {}
                           if (cont) DumpProps(cont, @"ybcontent");
                       } else {
                           DumpProps(self, @"ybsrc-self");
+                      }
+                      // ---- 修复: size=0 导致 imageURL 未构建, 从 remoteUrl 现场拼绝对地址 ----
+                      NSString *rurl = nil;
+                      if (cont) { @try { rurl = [cont valueForKey:@"remoteUrl"]; } @catch (NSException *e) {} }
+                      if ([rurl isKindOfClass:[NSString class]] && [rurl hasPrefix:@"file/preview/"]) {
+                          NSString *key = [rurl substringFromIndex:13];
+                          NSString *full = [NSString stringWithFormat:@"http://101.35.120.27:8090/milo/%@", key];
+                          NSURL *absu = [NSURL URLWithString:full];
+                          if (absu) {
+                              @try {
+                                  [self setValue:absu forKey:@"imageURL"];
+                                  LOGE([NSString stringWithFormat:@"ybfixed imageURL=%@", full]);
+                              } @catch (NSException *e) { LOGE([NSString stringWithFormat:@"ybfixed set-img-fail %@", e]); }
+                              id vurl = nil;
+                              @try { vurl = [self valueForKey:@"videoURL"]; } @catch (NSException *e) {}
+                              if (!vurl) {
+                                  @try {
+                                      [self setValue:absu forKey:@"videoURL"];
+                                      LOGE([NSString stringWithFormat:@"ybfixed videoURL=%@", full]);
+                                  } @catch (NSException *e2) {}
+                              }
+                          }
+                      } else {
+                          LOGE([NSString stringWithFormat:@"ybfixed skip rurl=%@", rurl]);
                       }
                   }
               } @catch (NSException *e) { LOGE([NSString stringWithFormat:@"ybloaddata err %@", e]); }
