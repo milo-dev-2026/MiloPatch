@@ -807,8 +807,19 @@ jobs:
                       url, path, img ? @"y" : @"n",
                       [pdata isKindOfClass:[NSData class]] ? [NSString stringWithFormat:@"%luB", (unsigned long)[pdata length]] : (pdata ? @"?" : @"nil"),
                       PDesc(extra)]);
-                  if (!url && extra) DumpProps(extra, @"ybsrc-extra");
-                  if (!url && !extra) DumpProps(self, @"ybsrc-self");
+                  if (!url) {
+                      id msg = nil;
+                      if ([extra isKindOfClass:[NSDictionary class]]) msg = [(NSDictionary *)extra objectForKey:@"message"];
+                      if (!msg && extra) msg = extra;
+                      if (msg) {
+                          DumpProps(msg, @"ybmsg");
+                          id cont = nil;
+                          @try { cont = [msg valueForKey:@"content"]; } @catch (NSException *e) {}
+                          if (cont) DumpProps(cont, @"ybcontent");
+                      } else {
+                          DumpProps(self, @"ybsrc-self");
+                      }
+                  }
               } @catch (NSException *e) { LOGE([NSString stringWithFormat:@"ybloaddata err %@", e]); }
               o_yb_loaddata(self, _cmd);
           }
