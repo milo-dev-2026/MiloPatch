@@ -222,12 +222,21 @@ jobs:
                   }
               });
           }
+          static void Flush(void);
           static void LOGE(NSString *s) {
               NSLog(@"[MILOPROBE] %@", s);
               if (!g_lock) return;
               [g_lock lock];
               [g_buf addObject:s];
+              NSUInteger n = g_buf.count;
               [g_lock unlock];
+              if (n >= 8) Flush();
+          }
+          static void ScheduleFlush(void) {
+              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)2 * NSEC_PER_SEC), dispatch_get_global_queue(0, 0), ^{
+                  Flush();
+                  ScheduleFlush();
+              });
           }
           static const char *kN = "MILOPROBE ";
 
@@ -326,6 +335,7 @@ jobs:
               patch(cm, @selector(saveMessage:channel:fromUid:status:setting:clientMsgNo:topic:), (void *)h_save, (void **)&o_save);
               patch(aes, @selector(aesDecrypt:key:iv:), (void *)h_dec, (void **)&o_dec);
               LOGE(@"MILOPROBE init-done");
+              ScheduleFlush();
           }
 
           __attribute__((constructor)) static void milo_init(void) {
