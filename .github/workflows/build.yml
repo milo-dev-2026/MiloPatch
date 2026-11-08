@@ -427,6 +427,16 @@ jobs:
                   } \
               } \
               LOGE([NSString stringWithFormat:@"pkt%d cls=%@ %@", N, cc, hx]); \
+              if (N == 1 && [(id)d respondsToSelector:@selector(length)]) { \
+                  NSData *dt = (NSData *)d; \
+                  NSUInteger n1 = dt.length; \
+                  NSUInteger ck = 0; \
+                  for (NSUInteger o1 = 0; o1 < n1 && ck < 12; o1 += 64) { \
+                      NSUInteger el = (n1 - o1) < 64 ? (n1 - o1) : 64; \
+                      LOGE([NSString stringWithFormat:@"rawrecv %lu %@", (unsigned long)o1, [dt subdataWithRange:NSMakeRange(o1, el)]]); \
+                      ck++; \
+                  } \
+              } \
               if (o_pkd##N) o_pkd##N(s, c, d, hh); \
               if (N == 2 && (id)d) FixSendack((id)s, (NSData *)d); \
               NSString *out = @""; \
