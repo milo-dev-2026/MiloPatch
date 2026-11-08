@@ -376,6 +376,8 @@ jobs:
               o_wsrecv(self, _cmd, comp);
           }
 
+          #include <dlfcn.h>
+
           #define PKDEC(N) \
           static void (*o_pkd##N)(id, SEL, id, id); \
           static void h_pkd##N(id s, SEL c, id d, id hh) { \
@@ -391,6 +393,21 @@ jobs:
                   } \
               } \
               LOGE([NSString stringWithFormat:@"pkt%d cls=%@ %@", N, cc, hx]); \
+              { \
+                  void *ra[2]; \
+                  ra[0] = __builtin_return_address(0); \
+                  ra[1] = __builtin_return_address(1); \
+                  Dl_info di; \
+                  NSString *bt = @""; \
+                  for (int q = 0; q < 2; q++) { \
+                      if (ra[q] && dladdr(ra[q], &di) && di.dli_fname) { \
+                          const char *bs = (const char *)di.dli_fname; \
+                          const char *sl = strrchr(bs, '/'); \
+                          bt = [bt stringByAppendingFormat:@"%@@%p ", sl ? sl + 1 : bs, ra[q]]; \
+                      } \
+                  } \
+                  LOGE([NSString stringWithFormat:@"pkt%d bt %@", N, bt]); \
+              } \
               if (o_pkd##N) o_pkd##N(s, c, d, hh); \
           }
           PKDEC(0) PKDEC(1) PKDEC(2) PKDEC(3) PKDEC(4) PKDEC(5)
