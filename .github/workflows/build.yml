@@ -649,6 +649,39 @@ jobs:
               LOGE(@"selftest-done");
           }
 
+          static id (*o_saveMsgs)(id, SEL, id);
+          static id h_saveMsgs(id self, SEL _cmd, id msgs) {
+              if ([msgs isKindOfClass:[NSArray class]]) {
+                  for (id m in msgs) {
+                      @try {
+                          LOGE([NSString stringWithFormat:@"saveMessages ch=%@ seq=%@ from=%@ ct=%@ cmn=%@",
+                                [m valueForKey:@"channelId"], [m valueForKey:@"messageSeq"],
+                                [m valueForKey:@"fromUid"], [m valueForKey:@"contentType"],
+                                [m valueForKey:@"clientMsgNo"]]);
+                      } @catch (__unused NSException *e) {}
+                  }
+              }
+              return o_saveMsgs(self, _cmd, msgs);
+          }
+
+          static void (*o_pullLast)(id, SEL, id, int, id);
+          static void h_pullLast(id self, SEL _cmd, id channel, int limit, id comp) {
+              NSString *cid = nil;
+              @try { cid = [channel valueForKey:@"channelId"]; } @catch (__unused NSException *e) {}
+              LOGE([NSString stringWithFormat:@"pullLast ch=%@ limit=%d", cid, limit]);
+              void (^orig)(NSArray *, NSError *) = comp;
+              id wrapped = comp;
+              if (comp) {
+                  void (^wb)(NSArray *, NSError *) = ^(NSArray *ms, NSError *err) {
+                      LOGE([NSString stringWithFormat:@"pullLast done ch=%@ cnt=%lu err=%@",
+                            cid, (unsigned long)(ms ? ms.count : 0), err ? PDesc(err) : @"-"]);
+                      if (orig) orig(ms, err);
+                  };
+                  wrapped = (__bridge id)CFBridgingRetain(wb); // 有意泄漏，防野指针
+              }
+              o_pullLast(self, _cmd, channel, limit, wrapped);
+          }
+
           static void ProbeInit(void) {
               g_buf = [NSMutableArray array];
               g_lock = [NSLock new];
@@ -670,6 +703,10 @@ jobs:
               patch(cm, @selector(callSendackDelegate:left:), (void *)h_csd, (void **)&o_csd);
               patch(cm, @selector(sendMessage:addRetryQueue:), (void *)h_send, (void **)&o_send);
               patch(cm, @selector(saveMessage:channel:fromUid:status:setting:clientMsgNo:topic:), (void *)h_save, (void **)&o_save);
+              patch(cm, @selector(saveMessages:), (void *)h_saveMsgs, (void **)&o_saveMsgs);
+              if ([cm instancesRespondToSelector:@selector(pullLastMessages:limit:complete:)]) {
+                  patch(cm, @selector(pullLastMessages:limit:complete:), (void *)h_pullLast, (void **)&o_pullLast);
+              }
               patch(aes, @selector(aesDecrypt:key:iv:), (void *)h_dec, (void **)&o_dec);
               patch(cm, NSSelectorFromString(@"handleMessages:"), (void *)h_hmsgs, (void **)&o_hmsgs);
               Class wt = objc_getClass("NSURLSessionWebSocketTask");
