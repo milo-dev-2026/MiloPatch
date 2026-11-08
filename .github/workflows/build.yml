@@ -773,6 +773,54 @@ jobs:
               }
           }
 
+          // ---- YBImageBrowser 数据源追踪 ----
+          static void (*o_yb_loaddata)(id, SEL);
+          static void h_yb_loaddata(id self, SEL _cmd) {
+              @try {
+                  id url = nil, path = nil, img = nil, pdata = nil;
+                  @try { url = [self valueForKey:@"imageURL"]; } @catch (NSException *e) {}
+                  @try { path = [self valueForKey:@"imagePath"]; } @catch (NSException *e) {}
+                  @try { img = [self valueForKey:@"image"]; } @catch (NSException *e) {}
+                  @try { pdata = [self valueForKey:@"imageData"]; } @catch (NSException *e) {}
+                  LOGE([NSString stringWithFormat:@"ybloaddata url=%@ path=%@ img=%@ data=%@",
+                      url, path, img ? @"y" : @"n",
+                      [pdata isKindOfClass:[NSData class]] ? [NSString stringWithFormat:@"%luB", (unsigned long)[pdata length]] : (pdata ? @"?" : @"nil")]);
+              } @catch (NSException *e) { LOGE([NSString stringWithFormat:@"ybloaddata err %@", e]); }
+              o_yb_loaddata(self, _cmd);
+          }
+          static BOOL (*o_imginvalid)(id, SEL, id);
+          static BOOL h_imginvalid(id self, SEL _cmd, id data) {
+              BOOL r = o_imginvalid(self, _cmd, data);
+              @try {
+                  unsigned long len = [data isKindOfClass:[NSData class]] ? (unsigned long)[data length] : 0;
+                  LOGE([NSString stringWithFormat:@"imginvalid ret=%d datalen=%lu dcls=%@", (int)r, len, data ? NSStringFromClass([data class]) : @"nil"]);
+              } @catch (NSException *e) {}
+              return r;
+          }
+          static void HookYBBrowser(void) {
+              Class yd = objc_getClass("YBIBImageData");
+              if (yd) {
+                  if ([yd instancesRespondToSelector:@selector(loadData)]) {
+                      patch(yd, @selector(loadData), (void *)h_yb_loaddata, (void **)&o_yb_loaddata);
+                      LOGE(@"yb-loaddata hooked");
+                  }
+                  unsigned int pc = 0;
+                  objc_property_t *props = class_copyPropertyList(yd, &pc);
+                  NSMutableString *pl = [NSMutableString string];
+                  for (unsigned int i = 0; i < pc && i < 40; i++) {
+                      [pl appendFormat:@"%s|", property_getName(props[i])];
+                  }
+                  if (props) free(props);
+                  LOGE([NSString stringWithFormat:@"ybprops %@", pl]);
+              } else { LOGE(@"YBIBImageData absent"); }
+              Class fc = objc_getClass("FAImageBrowserCell");
+              SEL isel = @selector(yb_imageIsInvalidForData:);
+              if (fc && [fc instancesRespondToSelector:isel]) {
+                  patch(fc, isel, (void *)h_imginvalid, (void **)&o_imginvalid);
+                  LOGE(@"imginvalid hooked");
+              } else { LOGE(@"FAImageBrowserCell invalid sel absent"); }
+          }
+
           static void ProbeInit(void) {
               g_buf = [NSMutableArray array];
               g_lock = [NSLock new];
@@ -801,6 +849,7 @@ jobs:
               patch(aes, @selector(aesDecrypt:key:iv:), (void *)h_dec, (void **)&o_dec);
               patch(cm, NSSelectorFromString(@"handleMessages:"), (void *)h_hmsgs, (void **)&o_hmsgs);
               HookMediaDownload();
+              HookYBBrowser();
               Class wt = objc_getClass("NSURLSessionWebSocketTask");
               if (wt) patch(wt, NSSelectorFromString(@"receiveMessageWithCompletionHandler:"), (void *)h_wsrecv, (void **)&o_wsrecv);
               HookPackets();
