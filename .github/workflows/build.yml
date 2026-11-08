@@ -28,6 +28,7 @@ jobs:
           cat > hook.m << 'OBJC'
           #import <UIKit/UIKit.h>
           #import <objc/runtime.h>
+          #include <string.h>
 
           static NSArray *BlockTitles(void) {
               static NSArray *a;
@@ -856,6 +857,185 @@ jobs:
               } @catch (NSException *e) {}
               return r;
           }
+          #pragma mark - VideoFix + SendTrace
+          static NSMutableDictionary *g_origMap = nil;
+          static NSString *MapKey(Class c, SEL s) { return [NSString stringWithFormat:@"%s:%s", class_getName(c), sel_getName(s)]; }
+          static IMP FindOrig(id self, SEL _cmd) {
+              Class k = [self class];
+              while (k) {
+                  NSValue *v = g_origMap[MapKey(k, _cmd)];
+                  if (v) return (IMP)[v pointerValue];
+                  k = class_getSuperclass(k);
+              }
+              return NULL;
+          }
+          static void ScanHook(SEL sel, void *newImp) {
+              if (!g_origMap) g_origMap = [NSMutableDictionary dictionary];
+              int n = objc_getClassList(NULL, 0);
+              Class *cs = (Class *)malloc(sizeof(Class) * n);
+              n = objc_getClassList(cs, n);
+              int hooked = 0;
+              for (int i = 0; i < n; i++) {
+                  Class c = cs[i];
+                  Method m = class_getInstanceMethod(c, sel);
+                  if (!m) continue;
+                  Class sup = class_getSuperclass(c);
+                  Method smm = sup ? class_getInstanceMethod(sup, sel) : NULL;
+                  if (m == smm) continue;
+                  IMP orig = method_getImplementation(m);
+                  if (orig == (IMP)newImp) continue;
+                  g_origMap[MapKey(c, sel)] = [NSValue valueWithPointer:orig];
+                  method_setImplementation(m, (IMP)newImp);
+                  hooked++;
+                  LOGE([NSString stringWithFormat:@"scanhook %s -> %s", sel_getName(sel), class_getName(c)]);
+              }
+              free(cs);
+              if (!hooked) LOGE([NSString stringWithFormat:@"scanhook %s no-impl", sel_getName(sel)]);
+          }
+          static NSString *RelPathFromData(id data) {
+              id extra = nil;
+              @try { extra = [data valueForKey:@"extraData"]; } @catch (NSException *e) {}
+              id msg = nil;
+              if ([extra isKindOfClass:[NSDictionary class]]) msg = [(NSDictionary *)extra objectForKey:@"message"];
+              if (!msg && extra) msg = extra;
+              if (!msg) return nil;
+              id cont = nil;
+              @try { cont = [msg valueForKey:@"content"]; } @catch (NSException *e) {}
+              if (!cont) return nil;
+              for (NSString *k in @[@"remoteUrl", @"url"]) {
+                  id v = nil;
+                  @try { v = [cont valueForKey:k]; } @catch (NSException *e) {}
+                  if ([v isKindOfClass:[NSString class]] && [v hasPrefix:@"file/preview/"]) return v;
+              }
+              return nil;
+          }
+          static void FixMediaData(id data, NSString *tag) {
+              if (!data) return;
+              NSString *rel = RelPathFromData(data);
+              if (!rel) { LOGE([NSString stringWithFormat:@"%@ skip norel", tag]); return; }
+              NSString *full = [NSString stringWithFormat:@"http://101.35.120.27:8090/milo/%@", [rel substringFromIndex:13]];
+              NSURL *u = [NSURL URLWithString:full];
+              if (!u) return;
+              for (NSString *pk in @[@"videoURL", @"imageURL"]) {
+                  id cur = nil;
+                  @try { cur = [data valueForKey:pk]; } @catch (NSException *e) { continue; }
+                  if (!cur) {
+                      @try { [data setValue:u forKey:pk]; LOGE([NSString stringWithFormat:@"%@ fixed %@=%@", tag, pk, full]); }
+                      @catch (NSException *e) {}
+                  }
+              }
+          }
+          static BOOL h_vinvalid(id self, SEL _cmd, id data) {
+              @try { FixMediaData(data, @"vinvalid"); } @catch (NSException *e) {}
+              IMP o = FindOrig(self, _cmd);
+              BOOL r = YES;
+              if (o) r = ((BOOL(*)(id, SEL, id))o)(self, _cmd, data);
+              @try {
+                  id vurl = nil; @try { vurl = [data valueForKey:@"videoURL"]; } @catch (NSException *e) {}
+                  id iurl = nil; @try { iurl = [data valueForKey:@"imageURL"]; } @catch (NSException *e) {}
+                  LOGE([NSString stringWithFormat:@"vinvalid ret=%d vurl=%@ iurl=%@ dcls=%@", (int)r, vurl ? @"y" : @"n", iurl ? @"y" : @"n", data ? NSStringFromClass([data class]) : @"nil"]);
+                  if (r && (vurl || iurl)) { LOGE(@"vinvalid force-ok"); r = NO; }
+              } @catch (NSException *e) {}
+              return r;
+          }
+          static void h_vloaddata(id self, SEL _cmd) {
+              @try {
+                  id vurl = nil; @try { vurl = [self valueForKey:@"videoURL"]; } @catch (NSException *e) {}
+                  LOGE([NSString stringWithFormat:@"vloaddata cls=%@ vurl=%@", NSStringFromClass([self class]), vurl ? vurl : @"(null)"]);
+                  DumpProps(self, @"vdatasrc");
+                  FixMediaData(self, @"vloaddata");
+              } @catch (NSException *e) {}
+              IMP o = FindOrig(self, _cmd);
+              if (o) ((void(*)(id, SEL))o)(self, _cmd);
+          }
+          static void ScanHookVideoLoadData(void) {
+              if (!g_origMap) g_origMap = [NSMutableDictionary dictionary];
+              int n = objc_getClassList(NULL, 0);
+              Class *cs = (Class *)malloc(sizeof(Class) * n);
+              n = objc_getClassList(cs, n);
+              for (int i = 0; i < n; i++) {
+                  const char *cn = class_getName(cs[i]);
+                  if (!strstr(cn, "VideoBrowser")) continue;
+                  SEL sel = @selector(loadData);
+                  Method m = class_getInstanceMethod(cs[i], sel);
+                  if (!m) continue;
+                  IMP orig = method_getImplementation(m);
+                  if (orig == (IMP)h_vloaddata) continue;
+                  g_origMap[MapKey(cs[i], sel)] = [NSValue valueWithPointer:orig];
+                  method_setImplementation(m, (IMP)h_vloaddata);
+                  LOGE([NSString stringWithFormat:@"scanhook loadData -> %s", cn]);
+              }
+              free(cs);
+          }
+          static void DumpMethods(NSString *clsName) {
+              Class c = objc_getClass(clsName.UTF8String);
+              if (!c) { LOGE([NSString stringWithFormat:@"methods %@: absent", clsName]); return; }
+              unsigned int n = 0;
+              Method *ms = class_copyMethodList(c, &n);
+              NSMutableString *s = [NSMutableString string];
+              for (unsigned int i = 0; i < n && i < 90; i++) [s appendFormat:@"%s;", sel_getName(method_getName(ms[i]))];
+              if (ms) free(ms);
+              LOGE([NSString stringWithFormat:@"methods %@: %@", clsName, s]);
+          }
+          static void TLog(id self, SEL _cmd, id a1, uintptr_t a2, uintptr_t a3, BOOL d1) {
+              @try {
+                  NSString *d = @"";
+                  if (d1 && a1) {
+                      @try { d = [NSString stringWithFormat:@" a1=%@", [a1 description]]; }
+                      @catch (NSException *e) { d = @" a1=?"; }
+                      if (d.length > 200) d = [d substringToIndex:200];
+                  }
+                  LOGE([NSString stringWithFormat:@"vtrace %s %s%@ a2=0x%lx a3=0x%lx", class_getName([self class]), sel_getName(_cmd), d, (unsigned long)a2, (unsigned long)a3]);
+              } @catch (NSException *e) {}
+          }
+          static void h_tr0(id self, SEL _cmd) { TLog(self, _cmd, nil, 0, 0, NO); IMP o = FindOrig(self, _cmd); if (o) ((void(*)(id, SEL))o)(self, _cmd); }
+          static void h_tr1(id self, SEL _cmd, id a1) { TLog(self, _cmd, a1, 0, 0, YES); IMP o = FindOrig(self, _cmd); if (o) ((void(*)(id, SEL, id))o)(self, _cmd, a1); }
+          static void h_tr1b(id self, SEL _cmd, uintptr_t a1) { TLog(self, _cmd, nil, a1, 0, NO); IMP o = FindOrig(self, _cmd); if (o) ((void(*)(id, SEL, uintptr_t))o)(self, _cmd, a1); }
+          static void h_tr2(id self, SEL _cmd, id a1, id a2) { TLog(self, _cmd, a1, (uintptr_t)a2, 0, YES); IMP o = FindOrig(self, _cmd); if (o) ((void(*)(id, SEL, id, id))o)(self, _cmd, a1, a2); }
+          static void h_tr3(id self, SEL _cmd, id a1, id a2, id a3) { TLog(self, _cmd, a1, (uintptr_t)a2, (uintptr_t)a3, YES); IMP o = FindOrig(self, _cmd); if (o) ((void(*)(id, SEL, id, id, id))o)(self, _cmd, a1, a2, a3); }
+          static void h_tr4(id self, SEL _cmd, id a1, id a2, id a3, id a4) { TLog(self, _cmd, a2 ? a2 : a1, (uintptr_t)a3, (uintptr_t)a4, YES); IMP o = FindOrig(self, _cmd); if (o) ((void(*)(id, SEL, id, id, id, id))o)(self, _cmd, a1, a2, a3, a4); }
+          static void h_tr7(id self, SEL _cmd, id a1, id a2, id a3, id a4, id a5, id a6, id a7) { TLog(self, _cmd, a1, (uintptr_t)a2, (uintptr_t)a3, YES); IMP o = FindOrig(self, _cmd); if (o) ((void(*)(id, SEL, id, id, id, id, id, id, id))o)(self, _cmd, a1, a2, a3, a4, a5, a6, a7); }
+          static void HookVideoAndSend(void) {
+              if (!g_origMap) g_origMap = [NSMutableDictionary dictionary];
+              DumpMethods(@"FAVideoView");
+              DumpMethods(@"WKVideoCell");
+              DumpMethods(@"WKVideoBrowserData");
+              DumpMethods(@"WKVideoContent");
+              ScanHookVideoLoadData();
+              ScanHook(@selector(yb_videoIsInvalidForData:), (void *)h_vinvalid);
+              ScanHook(NSSelectorFromString(@"compressVideo:"), (void *)h_tr1);
+              ScanHook(NSSelectorFromString(@"compressVideo:complete:"), (void *)h_tr2);
+              ScanHook(NSSelectorFromString(@"convertVideoQuailtyWithInputURL:outputURL:completeHandler:"), (void *)h_tr3);
+              ScanHook(NSSelectorFromString(@"sendMediaMessageWithData:expired:"), (void *)h_tr2);
+              ScanHook(NSSelectorFromString(@"stopCurrentVideoRecording"), (void *)h_tr0);
+              ScanHook(NSSelectorFromString(@"videoRecord:imgCallback:"), (void *)h_tr2);
+              ScanHook(NSSelectorFromString(@"saveRemoteVideoWithURL:completion:"), (void *)h_tr2);
+              ScanHook(NSSelectorFromString(@"imagePickerController:didFinishPickingAndEditingVideo:outputPath:error:"), (void *)h_tr4);
+              ScanHook(NSSelectorFromString(@"showExpiredStatus:"), (void *)h_tr1b);
+              ScanHook(NSSelectorFromString(@"setVideoURL:"), (void *)h_tr1);
+              ScanHook(NSSelectorFromString(@"handleVideoDataWithMessageModel:row:section:"), (void *)h_tr3);
+              int n = objc_getClassList(NULL, 0);
+              Class *cs = (Class *)malloc(sizeof(Class) * n);
+              n = objc_getClassList(cs, n);
+              for (int i = 0; i < n; i++) {
+                  unsigned int mc = 0;
+                  Method *ms = class_copyMethodList(cs[i], &mc);
+                  for (unsigned int j = 0; j < mc; j++) {
+                      const char *sn = sel_getName(method_getName(ms[j]));
+                      if (strstr(sn, "Upload:fromeType:")) {
+                          IMP orig = method_getImplementation(ms[j]);
+                          if (orig != (IMP)h_tr7) {
+                              g_origMap[[NSString stringWithFormat:@"%s:%s", class_getName(cs[i]), sn]] = [NSValue valueWithPointer:orig];
+                              method_setImplementation(ms[j], (IMP)h_tr7);
+                              LOGE([NSString stringWithFormat:@"scanhook %s -> %s", sn, class_getName(cs[i])]);
+                          }
+                      }
+                  }
+                  if (ms) free(ms);
+              }
+              free(cs);
+          }
+
           static void HookYBBrowser(void) {
               Class yd = objc_getClass("YBIBImageData");
               if (yd) {
@@ -909,6 +1089,7 @@ jobs:
               patch(cm, NSSelectorFromString(@"handleMessages:"), (void *)h_hmsgs, (void **)&o_hmsgs);
               HookMediaDownload();
               HookYBBrowser();
+              HookVideoAndSend();
               Class wt = objc_getClass("NSURLSessionWebSocketTask");
               if (wt) patch(wt, NSSelectorFromString(@"receiveMessageWithCompletionHandler:"), (void *)h_wsrecv, (void **)&o_wsrecv);
               HookPackets();
