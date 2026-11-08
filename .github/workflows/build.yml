@@ -379,7 +379,18 @@ jobs:
           #define PKDEC(N) \
           static void (*o_pkd##N)(id, SEL, id, id); \
           static void h_pkd##N(id s, SEL c, id d, id hh) { \
-              LOGE([NSString stringWithFormat:@"pkt%d-dec len=%lu", N, (unsigned long)PCnt(d)]); \
+              NSString *cc = NSStringFromClass([(id)d class]); \
+              NSString *hx = @"?"; \
+              if ([(id)d respondsToSelector:@selector(length)]) { \
+                  NSUInteger ln = (NSUInteger)[(id)d length]; \
+                  hx = [NSString stringWithFormat:@"len=%lu", (unsigned long)ln]; \
+                  if (ln > 0 && ln <= 4096) { \
+                      NSData *dt = (NSData *)d; \
+                      NSUInteger n2 = ln < 40 ? ln : 40; \
+                      hx = [hx stringByAppendingFormat:@" %@", [dt subdataWithRange:NSMakeRange(0, n2)]]; \
+                  } \
+              } \
+              LOGE([NSString stringWithFormat:@"pkt%d cls=%@ %@", N, cc, hx]); \
               if (o_pkd##N) o_pkd##N(s, c, d, hh); \
           }
           PKDEC(0) PKDEC(1) PKDEC(2) PKDEC(3) PKDEC(4) PKDEC(5)
