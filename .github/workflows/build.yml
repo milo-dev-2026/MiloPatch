@@ -775,16 +775,40 @@ jobs:
 
           // ---- YBImageBrowser 数据源追踪 ----
           static void (*o_yb_loaddata)(id, SEL);
+          static void DumpProps(id obj, NSString *tag) {
+              @try {
+                  NSMutableString *out = [NSMutableString string];
+                  Class k = [obj class];
+                  while (k && k != [NSObject class]) {
+                      unsigned int pc = 0;
+                      objc_property_t *props = class_copyPropertyList(k, &pc);
+                      for (unsigned int i = 0; i < pc; i++) {
+                          const char *pn = property_getName(props[i]);
+                          id v = nil;
+                          @try { v = [obj valueForKey:[NSString stringWithUTF8String:pn]]; } @catch (NSException *e) {}
+                          if (v) [out appendFormat:@"%s=%@;", pn, PDesc(v)];
+                      }
+                      if (props) free(props);
+                      k = class_getSuperclass(k);
+                      if (k == [obj class]) break;
+                  }
+                  LOGE([NSString stringWithFormat:@"%@ %@", tag, out]);
+              } @catch (NSException *e) {}
+          }
           static void h_yb_loaddata(id self, SEL _cmd) {
               @try {
-                  id url = nil, path = nil, img = nil, pdata = nil;
+                  id url = nil, path = nil, img = nil, pdata = nil, extra = nil;
                   @try { url = [self valueForKey:@"imageURL"]; } @catch (NSException *e) {}
                   @try { path = [self valueForKey:@"imagePath"]; } @catch (NSException *e) {}
                   @try { img = [self valueForKey:@"image"]; } @catch (NSException *e) {}
                   @try { pdata = [self valueForKey:@"imageData"]; } @catch (NSException *e) {}
-                  LOGE([NSString stringWithFormat:@"ybloaddata url=%@ path=%@ img=%@ data=%@",
+                  @try { extra = [self valueForKey:@"extraData"]; } @catch (NSException *e) {}
+                  LOGE([NSString stringWithFormat:@"ybloaddata url=%@ path=%@ img=%@ data=%@ extra=%@",
                       url, path, img ? @"y" : @"n",
-                      [pdata isKindOfClass:[NSData class]] ? [NSString stringWithFormat:@"%luB", (unsigned long)[pdata length]] : (pdata ? @"?" : @"nil")]);
+                      [pdata isKindOfClass:[NSData class]] ? [NSString stringWithFormat:@"%luB", (unsigned long)[pdata length]] : (pdata ? @"?" : @"nil"),
+                      PDesc(extra)]);
+                  if (!url && extra) DumpProps(extra, @"ybsrc-extra");
+                  if (!url && !extra) DumpProps(self, @"ybsrc-self");
               } @catch (NSException *e) { LOGE([NSString stringWithFormat:@"ybloaddata err %@", e]); }
               o_yb_loaddata(self, _cmd);
           }
