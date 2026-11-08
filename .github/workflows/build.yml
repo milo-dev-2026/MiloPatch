@@ -435,6 +435,14 @@ jobs:
                       i += 1 + ln;
                   } else break;
               }
+              // 找 clientMsgNo：msgid 之前、33 字节串
+              NSString *cmn = nil;
+              for (NSInteger j = (NSInteger)k - 33; j >= 1; j--) {
+                  if (p[j - 1] == 32) {
+                      NSString *s = [[NSString alloc] initWithData:[d subdataWithRange:NSMakeRange((NSUInteger)j, 32)] encoding:NSUTF8StringEncoding];
+                      if (s) { cmn = s; break; }
+                  }
+              }
               SetU64(pkt, @"setMessageId:", mid);
               SetU32(pkt, @"setMessageSeq:", ms);
               SetU32(pkt, @"setTimestamp:", ts);
@@ -442,8 +450,9 @@ jobs:
               if (hs.count > 0) SetStr(pkt, @"setFromUid:", hs[0]);
               if (hs.count > 1) SetStr(pkt, @"setChannelId:", hs[1]);
               SetStr(pkt, @"setPayload:", pls);
-              LOGE([NSString stringWithFormat:@"fixrecv mid=%llu ms=%u ts=%u from=%@ ch=%@ plen=%lu",
-                    mid, ms, ts, hs.count > 0 ? hs[0] : @"-", hs.count > 1 ? hs[1] : @"-", (unsigned long)(n - po)]);
+              SetStr(pkt, @"setClientMsgNo:", cmn);
+              LOGE([NSString stringWithFormat:@"fixrecv mid=%llu ms=%u ts=%u from=%@ ch=%@ cmn=%@ plen=%lu",
+                    mid, ms, ts, hs.count > 0 ? hs[0] : @"-", hs.count > 1 ? hs[1] : @"-", cmn ? cmn : @"-", (unsigned long)(n - po)]);
           }
 
           static void FixSendack(id pkt, NSData *d) {
