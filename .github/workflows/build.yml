@@ -433,6 +433,53 @@ jobs:
               }
           }
 
+          static NSData *HexData(NSString *hx) {
+              NSMutableData *d = [NSMutableData data];
+              for (NSUInteger i = 0; i + 1 < hx.length; i += 2) {
+                  unsigned int v = 0;
+                  sscanf([[hx substringWithRange:NSMakeRange(i, 2)] UTF8String], "%x", &v);
+                  [d appendBytes:&v length:1];
+              }
+              return d;
+          }
+
+          static void TryDecode(NSString *cls, NSString *hx) {
+              Class k = objc_getClass(cls.UTF8String);
+              if (!k) { LOGE([NSString stringWithFormat:@"st no-class %@", cls]); return; }
+              @try {
+                  id pkt = [[k alloc] init];
+                  Class hc = objc_getClass("WKHeader");
+                  id hd = hc ? [[hc alloc] init] : nil;
+                  NSData *d = HexData(hx);
+                  SEL sel = @selector(decode:header:);
+                  typedef BOOL (*Fn)(id, SEL, NSData *, id);
+                  Fn fn = (Fn)[pkt methodForSelector:sel];
+                  BOOL ok = fn(pkt, sel, d, hd);
+                  NSMutableString *s = [NSMutableString stringWithFormat:@"st %@ bytes=%lu ok=%d", cls, (unsigned long)d.length, (int)ok];
+                  for (NSString *k2 in @[@"messageId", @"clientSeq", @"messageSeq", @"reasonCode", @"pageVersion", @"fromUid", @"channelId", @"channelType", @"clientMsgNo", @"timestamp", @"expire", @"payload"]) {
+                      if ([pkt respondsToSelector:NSSelectorFromString(k2)]) {
+                          id v = [pkt valueForKey:k2];
+                          NSString *vs = [v isKindOfClass:[NSData class]] ? @"<data>" : [NSString stringWithFormat:@"%@", v];
+                          if ([vs length] > 40) vs = [vs substringToIndex:40];
+                          [s appendFormat:@" %@=%@", k2, vs ? vs : @"nil"];
+                      }
+                  }
+                  LOGE(s);
+              } @catch (NSException *e) {
+                  LOGE([NSString stringWithFormat:@"st %@ EXC %@: %@", cls, e.name, e.reason]);
+              }
+          }
+
+          static void DecodeSelftest(void) {
+              // 服务端实际发送的 SENDACK（17 字节）
+              TryDecode(@"WKSendackPacket", @"1d69cd9f63000000000000060000000101");
+              // 补齐 pageVersion 后（25 字节）
+              TryDecode(@"WKSendackPacket", @"1d69cd9f630000000000000600000001010000000000000000");
+              // 无 pageVersion 的其他变体
+              TryDecode(@"WKSendackPacket", @"1d69cd9f63000000000000060000000101deadbeefdeadbeef");
+              LOGE(@"selftest-done");
+          }
+
           static void ProbeInit(void) {
               g_buf = [NSMutableArray array];
               g_lock = [NSLock new];
@@ -461,6 +508,9 @@ jobs:
               HookPackets();
               LOGE(@"MILOPROBE init-done");
               ScheduleFlush();
+              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)12 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+                  DecodeSelftest();
+              });
           }
 
           __attribute__((constructor)) static void milo_init(void) {
