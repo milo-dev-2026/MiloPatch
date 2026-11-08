@@ -29,6 +29,7 @@ jobs:
           #import <UIKit/UIKit.h>
           #import <objc/runtime.h>
           #include <string.h>
+          #include <signal.h>
 
           static NSArray *BlockTitles(void) {
               static NSArray *a;
@@ -242,8 +243,11 @@ jobs:
               });
           }
           static void Flush(void);
+          static BOOL RunLogWorthy(NSString *s);
+          static void RunLogWrite(NSString *s);
           static void LOGE(NSString *s) {
               NSLog(@"[MILOPROBE] %@", s);
+              if (RunLogWorthy(s)) RunLogWrite(s);
               if (!g_lock) return;
               [g_lock lock];
               [g_buf addObject:s];
@@ -256,6 +260,35 @@ jobs:
                   Flush();
                   ScheduleFlush();
               });
+          }
+          static NSString *RunLogPath(void) { return [NSHomeDirectory() stringByAppendingPathComponent:@"Documents/milo_run.log"]; }
+          static void RunLogWrite(NSString *s) {
+              @try {
+                  NSString *p = RunLogPath();
+                  NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:p];
+                  NSData *d = [[s stringByAppendingString:@"\n"] dataUsingEncoding:NSUTF8StringEncoding];
+                  if (!fh) { [d writeToFile:p atomically:NO]; }
+                  else { [fh seekToEndOfFile]; [fh writeData:d]; [fh closeFile]; }
+              } @catch (NSException *e) {}
+          }
+          static BOOL RunLogWorthy(NSString *s) {
+              static NSArray *kws = nil;
+              if (!kws) kws = @[@"vtrace", @"vinvalid", @"vloaddata", @"vdatasrc", @"hookok", @"hookmiss", @"traceclass", @"methods ", @"ybfixed", @"CRASH"];
+              for (NSString *k in kws) if ([s rangeOfString:k].location != NSNotFound) return YES;
+              return NO;
+          }
+          static void MiloSigH(int sig) {
+              @try {
+                  NSString *st = [[NSThread callStackSymbols] componentsJoinedByString:@" | "];
+                  RunLogWrite([NSString stringWithFormat:@"CRASH sig=%d stack: %@", sig, st]);
+              } @catch (NSException *e) {}
+              signal(sig, SIG_DFL);
+              raise(sig);
+          }
+          static void MiloExH(NSException *e) {
+              @try {
+                  RunLogWrite([NSString stringWithFormat:@"CRASH exc name=%@ reason=%@ stack: %@", e.name, e.reason, [e.callStackSymbols componentsJoinedByString:@" | "]]);
+              } @catch (NSException *e2) {}
           }
           static const char *kN = "MILOPROBE ";
 
@@ -1053,6 +1086,11 @@ jobs:
               TraceClass(@"JCVideoRecordManager");
               TraceClass(@"JCVideoRecordView");
               TraceClass(@"JCVideoRecordUtil");
+              TraceClass(@"CWRecordView");
+              TraceClass(@"CWRecorder");
+              TraceClass(@"CWRecordStateView");
+              TraceClass(@"WKVideoRecordUtil");
+              TraceClass(@"JCRecordPlayerView");
               TraceClass(@"FAVideoView");
               TraceClass(@"WKVideoData");
               TraceClass(@"WKVideoCell");
@@ -1089,6 +1127,30 @@ jobs:
           static void ProbeInit(void) {
               g_buf = [NSMutableArray array];
               g_lock = [NSLock new];
+
+              // 崩溃捕获 + 上次运行日志回传
+              signal(SIGSEGV, MiloSigH); signal(SIGABRT, MiloSigH);
+              signal(SIGBUS, MiloSigH); signal(SIGTRAP, MiloSigH); signal(SIGILL, MiloSigH);
+              NSSetUncaughtExceptionHandler(MiloExH);
+              @try {
+                  NSString *p = RunLogPath();
+                  NSString *old = [NSString stringWithContentsOfFile:p encoding:NSUTF8StringEncoding error:nil];
+                  if (old.length) {
+                      [[NSFileManager defaultManager] removeItemAtPath:p error:nil];
+                      NSArray *lines = [old componentsSeparatedByString:@"\n"];
+                      NSUInteger cnt = lines.count;
+                      NSUInteger from = cnt > 80 ? cnt - 80 : 0;
+                      for (NSUInteger i = from; i < cnt; i++) {
+                          NSString *ln = lines[i];
+                          if (!ln.length) continue;
+                          while (ln.length > 3200) {
+                              LOGE([@"RUNLOG " stringByAppendingString:[ln substringToIndex:3200]]);
+                              ln = [ln substringFromIndex:3200];
+                          }
+                          LOGE([@"RUNLOG " stringByAppendingString:ln]);
+                      }
+                  }
+              } @catch (NSException *e) {}
 
               patch(objc_getClass("WKApp"), @selector(showUChatRightsAlertViewWithTitle:action:), (void *)h_show1, (void **)&o_show1);
               patch(objc_getClass("WKApp"), @selector(showUChatRightsAlertViewWithTitle:subtitle:buttonTypes:action:), (void *)h_show4, (void **)&o_show4);
