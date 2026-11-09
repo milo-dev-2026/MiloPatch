@@ -1212,9 +1212,63 @@ jobs:
               } else { LOGE(@"FAImageBrowserCell invalid sel absent"); }
           }
 
+          #import <mach/mach.h>
+          #include <mach-o/getsect.h>
+
+          // 运行时 patch FALiteVideo 里 sendVideoMessage:context: 内部的远程配置检查
+          // 原始 IMP 里有两处 cbz/tbz w27, ... 检查 boolValue 返回值, 私有化环境返回 NO → 跳过压缩+上传链
+          // 把这些条件跳转改成 mov w27, #1, 强制通过检查
+          static void PatchFALiteVideoSVM(void) {
+              @try {
+                  NSString *bpath = [[NSBundle bundleWithIdentifier:@"com.bytedance.FALiteVideo"] pathForResource:@"FALiteVideo" ofType:nil];
+                  if (!bpath) {
+                      NSArray *fws = [[NSBundle mainBundle] pathsForResourcesOfType:@"framework" inDirectory:@"Frameworks"];
+                      for (NSString *fw in fws) {
+                          if ([fw containsString:@"FALiteVideo"]) {
+                              bpath = [fw stringByAppendingPathComponent:@"FALiteVideo"];
+                              break;
+                          }
+                      }
+                  }
+                  if (!bpath) { LOGE(@"patch-svm: FALiteVideo not found"); return; }
+                  LOGE([NSString stringWithFormat:@"patch-svm: bundle=%@", bpath]);
+                  const struct mach_header_64 *mh = NULL;
+                  unsigned long sz = 0;
+                  mh = (const struct mach_header_64 *)getsectdatafromFramework(bpath.UTF8String, "__TEXT", "__text", &sz);
+                  if (!mh || sz == 0) { LOGE(@"patch-svm: no __text"); return; }
+                  uint8_t *base = (uint8_t *)mh;
+                  // 搜索目标指令 (little-endian in file memory)
+                  // cbz w27, ... = 34 00 07 5b (0x3400075b)
+                  // tbz w27, #0, ... = 36 00 13 9b (0x3600139b)
+                  // 改成 mov w27, #1 = 52 80 04 3b (0x5280043b)
+                  uint32_t target1 = 0x3400075b;
+                  uint32_t target2 = 0x3600139b;
+                  uint32_t replace  = 0x5280043b;
+                  int patched = 0;
+                  for (unsigned i = 0; i + 4 <= sz; i += 4) {
+                      uint32_t insn = *(uint32_t *)(base + i);
+                      if (insn == target1 || insn == target2) {
+                          // mach_vm_protect 让页可写
+                          mach_vm_address_t page = (mach_vm_address_t)(base + i) & ~(0x1000 - 1);
+                          vm_size_t pagesize = 0; vm_page_size(&pagesize);
+                          mach_vm_protect(mach_task_self(), page, pagesize, TRUE, VM_PROT_ALL);
+                          *(uint32_t *)(base + i) = replace;
+                          LOGE([NSString stringWithFormat:@"patch-svm: patched @ offset 0x%04x (0x%08x→0x%08x)", i, insn, replace]);
+                          patched++;
+                      }
+                  }
+                  LOGE([NSString stringWithFormat:@"patch-svm: done, patched=%d", patched]);
+              } @catch (NSException *e) {
+                  LOGE([NSString stringWithFormat:@"patch-svm ERR: %@", e.reason]);
+              }
+          }
+
           static void ProbeInit(void) {
               g_buf = [NSMutableArray array];
               g_lock = [NSLock new];
+
+              // 运行时 patch FALiteVideo 里的远程配置检查 (必须先 patch 再 hook!)
+              PatchFALiteVideoSVM();
 
               // 崩溃捕获 + 上次运行日志回传
               signal(SIGSEGV, MiloSigH); signal(SIGABRT, MiloSigH);
