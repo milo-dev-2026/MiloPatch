@@ -1789,6 +1789,46 @@ jobs:
                   }
               } @catch (NSException *e) {}
           }
+          // 诊断: 转储对象全部 ivar(数组元素打印所有字符串属性), 用于找数据源真实结构
+          static void DumpIvars(id obj) {
+              @try {
+                  Class k = [obj class];
+                  while (k && k != [NSObject class]) {
+                      unsigned int ic = 0;
+                      Ivar *ivs = class_copyIvarList(k, &ic);
+                      for (unsigned int i = 0; i < ic; i++) {
+                          const char *nm = ivar_getName(ivs[i]);
+                          const char *te = ivar_getTypeEncoding(ivs[i]);
+                          if (!nm || !te || te[0] != '@') continue;
+                          id val = object_getIvar(obj, ivs[i]);
+                          if ([val isKindOfClass:[NSArray class]] && [(NSArray *)val count] > 0 && [(NSArray *)val count] < 50) {
+                              NSMutableString *tmp = [NSMutableString stringWithFormat:@"array(%lu)", (unsigned long)[(NSArray *)val count]];
+                              for (id it in (NSArray *)val) {
+                                  [tmp appendFormat:@" | %@", NSStringFromClass([it class])];
+                                  @try {
+                                      unsigned int pc = 0;
+                                      objc_property_t *ps = class_copyPropertyList([it class], &pc);
+                                      for (unsigned int j = 0; j < pc && j < 20; j++) {
+                                          NSString *pn = [NSString stringWithUTF8String:property_getName(ps[j])];
+                                          @try {
+                                              id pv = [it valueForKey:pn];
+                                              if ([pv isKindOfClass:[NSString class]] && [(NSString *)pv length] < 30) [tmp appendFormat:@" %@=\"%@\"", pn, pv];
+                                          } @catch (NSException *e2) {}
+                                      }
+                                      if (ps) free(ps);
+                                  } @catch (NSException *e2) {}
+                              }
+                              LOGE([NSString stringWithFormat:@"IVAR %s = %@", nm, tmp]);
+                          } else if (val) {
+                              LOGE([NSString stringWithFormat:@"IVAR %s (%@)", nm, NSStringFromClass([val class])]);
+                          }
+                      }
+                      if (ivs) free(ivs);
+                      k = class_getSuperclass(k);
+                  }
+              } @catch (NSException *e) {}
+          }
+          static int s_ivarDumped = 0;
           static int s_inVcAppear = 0;
           static void h_vc_appear(id self, SEL _cmd, BOOL anim) {
               if (s_inVcAppear) {
@@ -1815,6 +1855,13 @@ jobs:
                       for (int d = 0; d < 3; d++) {
                           dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(d * 0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                               @try { UIView *vv = [self valueForKey:@"view"]; if (vv) PatchMeViews(vv); } @catch (NSException *e) {}
+                          });
+                      }
+                      // 转储数据源 ivar, 找真实属性名(一次性)
+                      if (!s_ivarDumped) {
+                          s_ivarDumped = 1;
+                          dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                              @try { DumpIvars(self); } @catch (NSException *e) {}
                           });
                       }
                   }
@@ -1854,6 +1901,35 @@ jobs:
                       LOGE([NSString stringWithFormat:@"vc-direct hook %s", nm]);
                   }
                   free(cs);
+              } @catch (NSException *e) {}
+          }
+          // 主动找当前正在显示的顶层 VC 直接 Patch(不等 viewDidAppear, 解决登录页先于 hook 显示的时序问题)
+          static void PatchTopVC(void) {
+              @try {
+                  dispatch_async(dispatch_get_main_queue(), ^{
+                      @try {
+                          UIWindow *win = nil;
+                          if (@available(iOS 13.0, *)) {
+                              for (UIScene *s in UIApplication.sharedApplication.connectedScenes) {
+                                  if (![s isKindOfClass:[UIWindowScene class]]) continue;
+                                  for (UIWindow *w in ((UIWindowScene *)s).windows) { if (w.isKeyWindow) { win = w; break; } }
+                                  if (win) break;
+                              }
+                          }
+                          if (!win) { for (UIWindow *w in UIApplication.sharedApplication.windows) { if (w.isKeyWindow) { win = w; break; } } }
+                          UIViewController *vc = win.rootViewController;
+                          int g = 0;
+                          while (vc.presentedViewController && g++ < 10) vc = vc.presentedViewController;
+                          // 若是导航/Tab 容器, 取最顶层可见 VC
+                          if ([vc isKindOfClass:[UINavigationController class]]) vc = [(UINavigationController *)vc topViewController];
+                          if ([vc isKindOfClass:[UITabBarController class]]) vc = [(UITabBarController *)vc selectedViewController];
+                          if ([vc isKindOfClass:[UINavigationController class]]) vc = [(UINavigationController *)vc topViewController];
+                          NSString *cls = NSStringFromClass([vc class]);
+                          LOGE([NSString stringWithFormat:@"TOPVC %@", cls]);
+                          if ([cls containsString:@"Login"] && vc.view) PatchLoginViews(vc.view);
+                          if ([cls isEqualToString:@"WKMeVC"] && vc.view) PatchMeViews(vc.view);
+                      } @catch (NSException *e) {}
+                  });
               } @catch (NSException *e) {}
           }
 
@@ -2205,7 +2281,7 @@ jobs:
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=brand6 07-40");
+              LOGE(@"BUILD=brand7 08-10");
               ComputeFVRange();
               // 视图树 dump: hook 基类 viewDidAppear(兜底子类未重写的 VC)
               @try {
@@ -2220,6 +2296,11 @@ jobs:
               HookVCDirect();
               dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ HookVCDirect(); });
               dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ HookVCDirect(); });
+              // 主动 Patch 当前显示页(登录页先于 hook 显示的时序补救): 立即/3s/6s/12s
+              PatchTopVC();
+              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ PatchTopVC(); });
+              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ PatchTopVC(); });
+              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(12 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ PatchTopVC(); });
               // 精准 UI: 登录 logo 替换(imageNamed 命中 LaunchIcon)
               @try {
                   Method m = class_getClassMethod([UIImage class], @selector(imageNamed:));
