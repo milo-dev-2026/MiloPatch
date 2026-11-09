@@ -29,7 +29,10 @@ jobs:
           #import <UIKit/UIKit.h>
           #import <objc/runtime.h>
           #include <string.h>
-          #include <signal.h>
+          #include <stdint.h>
+          #include <stddef.h>
+          // signal.h 会被 mach-o 头文件间接污染, 手动声明
+          extern void *signal(int, void (*)(int));
 
           static NSArray *BlockTitles(void) {
               static NSArray *a;
@@ -1213,15 +1216,34 @@ jobs:
           }
 
           // 运行时 patch FALiteVideo sendVideoMessage 内部远程配置跳过
-          // 只遍历 dyld, 不调 dlopen; 手动声明 vm_protect (避免 include mach/mach.h 污染 signal 等符号)
-          #include <mach-o/dyld.h>
-          #include <mach-o/loader.h>
-          #include <unistd.h>
-          #include <string.h>
-          #include <stdint.h>
+          // 不 include 任何 mach 头 (污染 signal 等符号), 手动 extern + 必要 struct 定义
+          extern uint32_t _dyld_image_count(void);
+          extern const char *_dyld_get_image_name(uint32_t);
+          extern const void *_dyld_get_image_header(uint32_t);
+          extern intptr_t _dyld_get_image_vmaddr_slide(uint32_t);
           extern int vm_protect(int, unsigned long, unsigned long, int, int);
           extern int mach_task_self(void);
+          extern long getpagesize(void);
+          extern int strcmp(const char *, const char *);
+          extern char *strstr(const char *, const char *);
           #define VM_PROT_ALL 0x07
+          #define MH_MAGIC_64 0xFEEDFACF
+          #define LC_SEGMENT_64 0x19
+          typedef struct { uint32_t cmd; uint32_t cmdsize; } lc_t;
+          typedef struct {
+              uint32_t magic; uint32_t cputype; uint32_t cpusubtype; uint32_t filetype;
+              uint32_t ncmds; uint32_t sizeofcmds; uint32_t flags; uint32_t reserved;
+              uint64_t entryoff; uint64_t stacksize;
+          } mh64_t;
+          typedef struct {
+              char segname[16]; uint64_t vmaddr; uint64_t vmsize; uint64_t fileoff; uint64_t filesize;
+              int32_t maxprot; int32_t initprot; uint32_t nsects; uint32_t flags;
+          } seg64_t;
+          typedef struct {
+              char sectname[16]; char segname[16]; uint64_t addr; uint64_t size; uint32_t offset;
+              uint32_t align; uint32_t reloff; uint32_t nreloc; uint32_t flags;
+              uint32_t reserved1; uint32_t reserved2; uint32_t reserved3;
+          } sec64_t;
 
           static void PatchFALiteVideoSVM(void) {
               @autoreleasepool {
@@ -1231,16 +1253,16 @@ jobs:
                   for (uint32_t i = 0; i < imgCnt; i++) {
                       const char *nm = _dyld_get_image_name(i);
                       if (!nm || !strstr(nm, "FALiteVideo")) continue;
-                      const struct mach_header_64 *mh = (const struct mach_header_64 *)_dyld_get_image_header(i);
+                      const mh64_t *mh = (const mh64_t *)_dyld_get_image_header(i);
                       if (!mh || mh->magic != MH_MAGIC_64) continue;
                       intptr_t slide = _dyld_get_image_vmaddr_slide(i);
-                      uint8_t *cp = (uint8_t *)mh + sizeof(struct mach_header_64);
+                      uint8_t *cp = (uint8_t *)mh + sizeof(mh64_t);
                       for (uint32_t c = 0; c < mh->ncmds; c++) {
-                          struct load_command *lc = (struct load_command *)cp;
+                          lc_t *lc = (lc_t *)cp;
                           if (lc->cmd == LC_SEGMENT_64) {
-                              struct segment_command_64 *seg = (struct segment_command_64 *)lc;
+                              seg64_t *seg = (seg64_t *)lc;
                               if (strcmp(seg->segname, "__TEXT") == 0) {
-                                  struct section_64 *sec = (struct section_64 *)(seg + 1);
+                                  sec64_t *sec = (sec64_t *)(seg + 1);
                                   for (uint32_t s = 0; s < seg->nsects; s++) {
                                       if (strcmp(sec[s].sectname, "__text") == 0) {
                                           base = (uint8_t *)(intptr_t)(sec[s].addr + slide);
