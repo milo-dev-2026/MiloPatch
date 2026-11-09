@@ -29,8 +29,6 @@ jobs:
           #import <UIKit/UIKit.h>
           #import <objc/runtime.h>
           #include <string.h>
-          #include <stdint.h>
-          #include <stddef.h>
           #include <signal.h>
 
           static NSArray *BlockTitles(void) {
@@ -1214,89 +1212,144 @@ jobs:
               } else { LOGE(@"FAImageBrowserCell invalid sel absent"); }
           }
 
-          // 运行时 patch FALiteVideo sendVideoMessage 内部远程配置跳过
-          // 不 include 任何 mach 头 (污染 signal 等符号), 手动 extern + 必要 struct 定义
-          extern uint32_t _dyld_image_count(void);
-          extern const char *_dyld_get_image_name(uint32_t);
-          extern const void *_dyld_get_image_header(uint32_t);
-          extern intptr_t _dyld_get_image_vmaddr_slide(uint32_t);
-          extern int vm_protect(int, unsigned long, unsigned long, int, int);
-          extern int mach_task_self(void);
-          extern long getpagesize(void);
-          extern int strcmp(const char *, const char *);
-          extern char *strstr(const char *, const char *);
-          #define VM_PROT_ALL 0x07
-          #define MH_MAGIC_64 0xFEEDFACF
-          #define LC_SEGMENT_64 0x19
-          typedef struct { uint32_t cmd; uint32_t cmdsize; } lc_t;
-          typedef struct {
-              uint32_t magic; uint32_t cputype; uint32_t cpusubtype; uint32_t filetype;
-              uint32_t ncmds; uint32_t sizeofcmds; uint32_t flags; uint32_t reserved;
-              uint64_t entryoff; uint64_t stacksize;
-          } mh64_t;
-          typedef struct {
-              char segname[16]; uint64_t vmaddr; uint64_t vmsize; uint64_t fileoff; uint64_t filesize;
-              int32_t maxprot; int32_t initprot; uint32_t nsects; uint32_t flags;
-          } seg64_t;
-          typedef struct {
-              char sectname[16]; char segname[16]; uint64_t addr; uint64_t size; uint32_t offset;
-              uint32_t align; uint32_t reloff; uint32_t nreloc; uint32_t flags;
-              uint32_t reserved1; uint32_t reserved2; uint32_t reserved3;
-          } sec64_t;
+          // 运行时 patch FALiteVideo 里 sendVideoMessage:context: 内部的远程配置检查
+          // getsectdatafromFramework 在 iOS fat binary framework 上不可靠, 改用 dlopen + _dyld_* 手动遍历 Mach-O
+          #include <mach/mach.h>
+          #include <mach-o/dyld.h>
+          #include <mach-o/getsect.h>
+          #include <mach-o/loader.h>
+          #include <unistd.h>
+          #include <dlfcn.h>
+          #include <string.h>
 
-          static void PatchFALiteVideoSVM(void) {
-              @autoreleasepool {
-              @try {
-                  uint8_t *base = NULL; unsigned long sz = 0;
-                  uint32_t imgCnt = _dyld_image_count();
-                  for (uint32_t i = 0; i < imgCnt; i++) {
-                      const char *nm = _dyld_get_image_name(i);
-                      if (!nm || !strstr(nm, "FALiteVideo")) continue;
-                      const mh64_t *mh = (const mh64_t *)_dyld_get_image_header(i);
-                      if (!mh || mh->magic != MH_MAGIC_64) continue;
+          static uint8_t *FindTextSection(const char *imageName, unsigned long *outSize) {
+              if (!outSize) return NULL; *outSize = 0;
+              // 确保 framework 已加载
+              void *h = dlopen(imageName, RTLD_NOW);
+              if (!h) { LOGE([NSString stringWithFormat:@"patch-svm: dlopen fail %s", imageName]); return NULL; }
+              // 遍历 dyld images 找名字匹配的
+              uint32_t imgCnt = _dyld_image_count();
+              for (uint32_t i = 0; i < imgCnt; i++) {
+                  const char *name = _dyld_get_image_name(i);
+                  if (!name) continue;
+                  // 匹配: 路径包含 FALiteVideo (通常 framework 最后一段文件名)
+                  if (strstr(name, "FALiteVideo.framework/FALiteVideo") ||
+                      strstr(name, "FALiteVideo")) {
+                      const struct mach_header_64 *mh64 = (const struct mach_header_64 *)_dyld_get_image_header(i);
+                      if (!mh64 || mh64->magic != MH_MAGIC_64) continue;
                       intptr_t slide = _dyld_get_image_vmaddr_slide(i);
-                      uint8_t *cp = (uint8_t *)mh + sizeof(mh64_t);
-                      for (uint32_t c = 0; c < mh->ncmds; c++) {
-                          lc_t *lc = (lc_t *)cp;
+                      LOGE([NSString stringWithFormat:@"patch-svm: found image=%s mh=%p slide=%ld", name, mh64, (long)slide]);
+                      // 手动遍历 load commands
+                      uint8_t *cmdBase = (uint8_t *)mh64 + sizeof(struct mach_header_64);
+                      uint32_t ncmds = mh64->ncmds;
+                      uint8_t *p = cmdBase;
+                      for (uint32_t c = 0; c < ncmds; c++) {
+                          struct load_command *lc = (struct load_command *)p;
                           if (lc->cmd == LC_SEGMENT_64) {
-                              seg64_t *seg = (seg64_t *)lc;
+                              struct segment_command_64 *seg = (struct segment_command_64 *)lc;
                               if (strcmp(seg->segname, "__TEXT") == 0) {
-                                  sec64_t *sec = (sec64_t *)(seg + 1);
+                                  struct section_64 *sec = (struct section_64 *)(seg + 1);
                                   for (uint32_t s = 0; s < seg->nsects; s++) {
                                       if (strcmp(sec[s].sectname, "__text") == 0) {
-                                          base = (uint8_t *)(intptr_t)(sec[s].addr + slide);
-                                          sz = sec[s].size; break;
+                                          uint8_t *addr = (uint8_t *)(intptr_t)(sec[s].addr + slide);
+                                          LOGE([NSString stringWithFormat:@"patch-svm: __text addr=%p vm_addr=0x%llx size=%llu", addr, (unsigned long long)sec[s].addr, (unsigned long long)sec[s].size]);
+                                          *outSize = sec[s].size;
+                                          return addr;
                                       }
                                   }
                               }
                           }
-                          if (base) break;
-                          cp += lc->cmdsize;
+                          p += lc->cmdsize;
                       }
-                      if (base) break;
                   }
-                  if (!base) { LOGE(@"patch-svm: FALiteVideo not in dyld"); return; }
-                  LOGE([NSString stringWithFormat:@"patch-svm: base=%p sz=%lu", base, sz]);
-                  uint32_t t1 = 0x3400075b, t2 = 0x3600139b, rep = 0x5280043b;
+              }
+              LOGE(@"patch-svm: dyld image not found");
+              return NULL;
+          }
+
+          static void PatchFALiteVideoSVM(void) {
+              @try {
+                  // 尝试多种 dlopen 名字
+                  const char *names[] = { "FALiteVideo", "@loader_path/Frameworks/FALiteVideo.framework/FALiteVideo", NULL };
+                  uint8_t *base = NULL; unsigned long sz = 0;
+                  for (int i = 0; names[i] && !base; i++) {
+                      base = FindTextSection(names[i], &sz);
+                  }
+                  if (!base || sz == 0) {
+                      // fallback: 遍历所有 image 暴力找包含目标指令的
+                      LOGE(@"patch-svm: named dlopen miss, brute force scan");
+                      uint32_t imgCnt = _dyld_image_count();
+                      for (uint32_t i = 0; i < imgCnt && !base; i++) {
+                          const struct mach_header_64 *mh64 = (const struct mach_header_64 *)_dyld_get_image_header(i);
+                          if (!mh64 || mh64->magic != MH_MAGIC_64) continue;
+                          intptr_t slide = _dyld_get_image_vmaddr_slide(i);
+                          uint8_t *cmdBase = (uint8_t *)mh64 + sizeof(struct mach_header_64);
+                          uint8_t *p = cmdBase;
+                          for (uint32_t c = 0; c < mh64->ncmds; c++) {
+                              struct load_command *lc = (struct load_command *)p;
+                              if (lc->cmd == LC_SEGMENT_64) {
+                                  struct segment_command_64 *seg = (struct segment_command_64 *)lc;
+                                  struct section_64 *sec = (struct section_64 *)(seg + 1);
+                                  for (uint32_t s = 0; s < seg->nsects; s++) {
+                                      if (strcmp(sec[s].sectname, "__text") == 0) {
+                                          uint8_t *addr = (uint8_t *)(intptr_t)(sec[s].addr + slide);
+                                          unsigned long ssize = sec[s].size;
+                                          // 粗筛: size 在 0x4000~0x20000 之间的 framework text section
+                                          if (ssize >= 0x2000 && ssize <= 0x40000) {
+                                              // 检查是否包含两个目标指令
+                                              BOOL has1 = NO, has2 = NO;
+                                              for (unsigned long j = 0; j + 4 <= ssize; j += 4) {
+                                                  uint32_t insn = *(uint32_t *)(addr + j);
+                                                  if (insn == 0x3400075b) has1 = YES;
+                                                  if (insn == 0x3600139b) has2 = YES;
+                                                  if (has1 && has2) break;
+                                              }
+                                              if (has1 && has2) {
+                                                  const char *nm = _dyld_get_image_name(i);
+                                                  LOGE([NSString stringWithFormat:@"patch-svm: brute match img=%s size=%lu", nm ?: "?", ssize]);
+                                                  base = addr; sz = ssize;
+                                                  break;
+                                              }
+                                          }
+                                      }
+                                  }
+                              }
+                              if (base) break;
+                              p += lc->cmdsize;
+                          }
+                      }
+                  }
+                  if (!base || sz == 0) { LOGE(@"patch-svm: all approaches failed"); return; }
+
+                  LOGE([NSString stringWithFormat:@"patch-svm: __text base=%p sz=%lu, scanning...", base, sz]);
+                  uint32_t target1 = 0x3400075b; // cbz w27, ...
+                  uint32_t target2 = 0x3600139b; // tbz w27, #0, ...
+                  uint32_t replace  = 0x5280043b; // mov w27, #1
                   int patched = 0;
-                  unsigned long ps = (unsigned long)getpagesize();
+                  vm_size_t ps = (vm_size_t)getpagesize();
                   for (unsigned long i = 0; i + 4 <= sz; i += 4) {
                       uint32_t insn = *(uint32_t *)(base + i);
-                      if (insn == t1 || insn == t2) {
-                          unsigned long page = ((unsigned long)(base + i)) & ~(ps - 1);
-                          vm_protect(mach_task_self(), page, ps, 1, VM_PROT_ALL);
-                          *(uint32_t *)(base + i) = rep;
-                          LOGE([NSString stringWithFormat:@"patch-svm: @0x%04lx 0x%08x->0x%08x", i, insn, rep]);
+                      if (insn == target1 || insn == target2) {
+                          vm_address_t page = (vm_address_t)(base + i) & ~(ps - 1);
+                          vm_size_t pss = ps;
+                          kern_return_t kr = vm_protect(mach_task_self(), page, pss, TRUE, VM_PROT_READ | VM_PROT_WRITE | VM_PROT_EXECUTE);
+                          if (kr != KERN_SUCCESS) {
+                              LOGE([NSString stringWithFormat:@"patch-svm: vm_protect fail=%d @ 0x%04lx, direct write", kr, i]);
+                          }
+                          *(uint32_t *)(base + i) = replace;
+                          LOGE([NSString stringWithFormat:@"patch-svm: patched @ 0x%04lx (0x%08x→0x%08x)", i, insn, replace]);
                           patched++;
                       }
                   }
-                  LOGE([NSString stringWithFormat:@"patch-svm: done patched=%d", patched]);
+                  LOGE([NSString stringWithFormat:@"patch-svm: done, patched=%d", patched]);
               } @catch (NSException *e) {
                   LOGE([NSString stringWithFormat:@"patch-svm ERR: %@", e.reason]);
               }
-              }
           }
 
+          static void ProbeInit(void) {
+              g_buf = [NSMutableArray array];
+              g_lock = [NSLock new];
 
               // 崩溃捕获 + 上次运行日志回传
               signal(SIGSEGV, MiloSigH); signal(SIGABRT, MiloSigH);
@@ -1362,8 +1415,8 @@ jobs:
               dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
                   ProbeInit();
               });
-              // 8 秒后 patch: 此时 framework 全加载, ProbeInit 日志 buffer 也初始化好了
-              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)8 * NSEC_PER_SEC), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+              // 10秒后 patch: 此时 framework 全加载完毕, dyld 状态稳定
+              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)10 * NSEC_PER_SEC), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
                   PatchFALiteVideoSVM();
               });
               dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)4 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
