@@ -962,6 +962,24 @@ jobs:
                   }
               } @catch (NSException *e) { LOGE([@"svm-ERR " stringByAppendingString:e.reason]); }
               IMP o = FindOrig(self, _cmd);
+              static int s_svmDump = 0;
+              if (!s_svmDump) {
+                  s_svmDump = 1;
+                  @try {
+                      Class c = object_getClass(self);
+                      LOGE([NSString stringWithFormat:@"svm-self cls=%s", class_getName(c)]);
+                      unsigned int mc = 0;
+                      Method *ms = class_copyMethodList(c, &mc);
+                      NSMutableString *sb = [NSMutableString string];
+                      for (unsigned int i = 0; i < mc; i++) {
+                          [sb appendFormat:@"%s;", sel_getName(method_getName(ms[i]))];
+                      }
+                      if (ms) free(ms);
+                      LOGE([NSString stringWithFormat:@"svm-methods => %@", sb.length > 3000 ? [sb substringToIndex:3000] : sb]);
+                      Class sc = class_getSuperclass(c);
+                      if (sc) LOGE([NSString stringWithFormat:@"svm-super=%s", class_getName(sc)]);
+                  } @catch (NSException *e) { LOGE(@"svm-dump ERR"); }
+              }
               if (o) ((void(*)(id, SEL, id, id))o)(self, _cmd, videoArg, contextArg);
           }
 
@@ -1336,7 +1354,7 @@ jobs:
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=cls2 21-40");
+              LOGE(@"BUILD=seldump 21-45");
               ComputeFVRange();
               const char *names[2] = { "__NSDictionaryM", "__NSDictionaryI" };
               for (int i = 0; i < 2; i++) {
