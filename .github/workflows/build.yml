@@ -1553,7 +1553,7 @@ jobs:
                                       HookMaxVDForObject(vp, "vipUser");
                                       s_rightsHooked = 1;
                                   } else { LOGE(@"rights-live br=nil"); }
-                              } else { LOGE(@"rights-live no-bizSel rc=%s", rc ? class_getName(object_getClass(rc)) : "nil"); }
+                              } else { LOGE([NSString stringWithFormat:@"rights-live no-bizSel rc=%s", rc ? class_getName(object_getClass(rc)) : "nil"]); }
                           } else { LOGE([NSString stringWithFormat:@"rights-live no-rcSel mgr=%s", class_getName(object_getClass(self))]); }
                       } @catch (NSException *e) { LOGE(@"rights-live ERR"); }
                   }
