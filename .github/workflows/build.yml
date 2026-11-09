@@ -1307,7 +1307,7 @@ jobs:
           static id h_ud_get(id self, SEL _cmd, NSString *key) {
               id v = ((id(*)(id, SEL, id))g_udOrig)(self, _cmd, key);
               @try {
-                  if (g_cfgLog < 400 && [key isKindOfClass:[NSString class]]) {
+                  if (g_cfgLog < 400 && [key isKindOfClass:[NSString class]] && ![key isEqualToString:@"flame_second"]) {
                       NSString *low = [key lowercaseString];
                       if ([low containsString:@"video"] || [low containsString:@"duration"] ||
                           [low containsString:@"second"] || [low containsString:@"record"] || [low containsString:@"max"]) {
@@ -1316,6 +1316,17 @@ jobs:
                       }
                   }
               } @catch (NSException *e) {}
+              return v;
+          }
+
+          // ZLPhotoBrowser 的视频时长上限: 0 会导致"不能选择超过0秒的视频"
+          static IMP g_mvdOrig = NULL;
+          static NSInteger h_mvd(id self, SEL _cmd) {
+              NSInteger v = g_mvdOrig ? ((NSInteger(*)(id, SEL))g_mvdOrig)(self, _cmd) : 0;
+              if (v <= 0) {
+                  LOGE([NSString stringWithFormat:@"mvd FORCE 60 (was %ld)", (long)v]);
+                  return 60;
+              }
               return v;
           }
 
@@ -1342,6 +1353,21 @@ jobs:
                       method_setImplementation(mu, (IMP)h_ud_get);
                       LOGE(@"fvtrace hook NSUserDefaults");
                   }
+              }
+              // ZLPhotoConfiguration.maxSelectVideoDuration -> 兜底 60s
+              Class zc = NSClassFromString(@"ZLPhotoBrowser.ZLPhotoConfiguration");
+              if (!zc) zc = objc_getClass("_TtC14ZLPhotoBrowser20ZLPhotoConfiguration");
+              if (zc) {
+                  Method mm = class_getInstanceMethod(zc, @selector(maxSelectVideoDuration));
+                  if (mm) {
+                      g_mvdOrig = method_getImplementation(mm);
+                      method_setImplementation(mm, (IMP)h_mvd);
+                      LOGE(@"mvd hooked");
+                  } else {
+                      LOGE(@"mvd sel absent");
+                  }
+              } else {
+                  LOGE(@"mvd class absent");
               }
           }
 
