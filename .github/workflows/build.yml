@@ -1084,10 +1084,50 @@ jobs:
               }
               free(cs);
           }
+          static void HookSelAppWide(NSString *selName, int arity) {
+              SEL sel = NSSelectorFromString(selName);
+              void *imps[8] = { (void *)h_g0, (void *)h_g1, (void *)h_g2, (void *)h_g3, (void *)h_g4, (void *)h_g5, (void *)h_g6, (void *)h_g7 };
+              int n = objc_getClassList(NULL, 0);
+              Class *cs = (Class *)malloc(sizeof(Class) * n);
+              n = objc_getClassList(cs, n);
+              int hooked = 0;
+              for (int i = 0; i < n; i++) {
+                  const char *img = class_getImageName(cs[i]);
+                  if (!img || (!strstr(img, "FayChat") && !strstr(img, "FAMainModule") && !strstr(img, "FALiteVideo") && !strstr(img, "ffmpegkit"))) continue;
+                  Method m = FindOwnMethod(cs[i], sel);
+                  if (!m) continue;
+                  int na = (int)method_getNumberOfArguments(m) - 2;
+                  if (na != arity || na < 0 || na > 7) { LOGE([NSString stringWithFormat:@"selhook %s sig-mismatch na=%d", sel_getName(sel), na]); continue; }
+                  char rt[32]; method_getReturnType(m, rt, sizeof(rt));
+                  if (!TypeCharSafe(rt[0])) continue;
+                  BOOL badArg = NO;
+                  for (int a = 2; a < na + 2; a++) { char at[64]; method_getArgumentType(m, a, at, sizeof(at)); if (!TypeCharSafe(at[0])) { badArg = YES; break; } }
+                  if (badArg) continue;
+                  if (na >= 1) { char at1[64]; method_getArgumentType(m, 2, at1, sizeof(at1)); if (at1[0] == '@') g_descMap[MapKey(cs[i], sel)] = @YES; }
+                  if (g_origMap[MapKey(cs[i], sel)]) continue;
+                  IMP orig = method_getImplementation(m);
+                  if (orig == (IMP)imps[na]) continue;
+                  g_origMap[MapKey(cs[i], sel)] = [NSValue valueWithPointer:orig];
+                  method_setImplementation(m, (IMP)imps[na]);
+                  hooked++;
+                  LOGE([NSString stringWithFormat:@"selhook %s -> %s", sel_getName(sel), class_getName(cs[i])]);
+              }
+              free(cs);
+              if (!hooked) LOGE([NSString stringWithFormat:@"selhook %s no-impl", sel_getName(sel)]);
+          }
           static void HookVideoAndSend(void) {
               if (!g_origMap) g_origMap = [NSMutableDictionary dictionary];
               if (!g_descMap) g_descMap = [NSMutableDictionary dictionary];
               TraceCameraClasses();
+              // 视频发送链路关键 selector
+              HookSelAppWide(@"takePhoto:doneBlock:cancelBlock:", 3);
+              HookSelAppWide(@"setTakeDoneBlock:", 1);
+              HookSelAppWide(@"compressVideo", 0);
+              HookSelAppWide(@"compressVideo:complete:", 2);
+              HookSelAppWide(@"executeFFmpegCommand:", 1);
+              HookSelAppWide(@"executeFFmpegTranscoding:outputPath:", 2);
+              HookSelAppWide(@"buildFFmpegCommandWithTSURLs:outputPath:", 2);
+              HookSelAppWide(@"captureOutput:didFinishRecordingToOutputFileAtURL:fromConnections:error:", 4);
               DumpMethods(@"WKVideoData");
               DumpMethods(@"FAVideoView");
               DumpMethods(@"JCVideoRecordManager");
