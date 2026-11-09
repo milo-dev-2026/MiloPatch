@@ -1764,11 +1764,15 @@ jobs:
           static IMP g_exportOrig = NULL;
           static void h_export(id self, SEL _cmd, id handler) {
               @try { LOGE(@"AVExport start"); } @catch (NSException *e) {}
+              @try {
+                  ((void(*)(id, SEL, BOOL))objc_msgSend)(self, NSSelectorFromString(@"setShouldOptimizeForNetworkUse:"), YES);
+                  LOGE(@"AVExport faststart=YES");
+              } @catch (NSException *e) {}
               if (g_exportOrig) ((void(*)(id, SEL, id))g_exportOrig)(self, _cmd, handler);
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=maxvd7 03-25");
+              LOGE(@"BUILD=maxvd8 03-40");
               ComputeFVRange();
               const char *names[2] = { "__NSDictionaryM", "__NSDictionaryI" };
               for (int i = 0; i < 2; i++) {
