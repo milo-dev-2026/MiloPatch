@@ -1652,7 +1652,7 @@ jobs:
                   NSString *cls = NSStringFromClass([self class]);
                   if ([cls containsString:@"UTalkBadge"] || [cls containsString:@"UnverifyBadge"]) {
                       ((void(*)(id, SEL, id))g_imgViewSetImgOrig)(self, _cmd, nil);
-                      self.hidden = YES;
+                      [(UIView *)self setHidden:YES];
                       return;
                   }
               } @catch (NSException *e) {}
@@ -1664,7 +1664,7 @@ jobs:
               @try {
                   NSString *desc = [self description];
                   if ([desc containsString:@"login_setting"]) {
-                      self.hidden = YES;
+                      [(UIView *)self setHidden:YES];
                       LOGE(@"login setting btn hidden");
                   }
               } @catch (NSException *e) {}
