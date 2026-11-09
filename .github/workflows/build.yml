@@ -1353,8 +1353,31 @@ jobs:
               return v;
           }
 
+          // 抓被 App 内部 try/catch 吞掉的异常 + 判断压缩阶段是否启动
+          static IMP g_excRaiseOrig = NULL;
+          static void h_exc_raise(id self, SEL _cmd) {
+              @try {
+                  uintptr_t ra = (uintptr_t)__builtin_return_address(0);
+                  NSString *nm = [self name] ?: @"?";
+                  NSString *rs = [self reason] ?: @"?";
+                  BOOL inFV = (g_fvLo && ra >= g_fvLo && ra < g_fvHi);
+                  static int s_n = 0;
+                  if (inFV || (s_n < 20 && [nm containsString:@"Video"])) {
+                      s_n++;
+                      LOGE([NSString stringWithFormat:@"EXC inFV=%d name=%@ reason=%@ caller=%p",
+                           inFV, nm, rs.length > 200 ? [rs substringToIndex:200] : rs, (void *)ra]);
+                  }
+              } @catch (NSException *e) {}
+              if (g_excRaiseOrig) ((void(*)(id, SEL))g_excRaiseOrig)(self, _cmd);
+          }
+          static IMP g_exportOrig = NULL;
+          static void h_export(id self, SEL _cmd, id handler) {
+              @try { LOGE(@"AVExport start"); } @catch (NSException *e) {}
+              if (g_exportOrig) ((void(*)(id, SEL, id))g_exportOrig)(self, _cmd, handler);
+          }
+
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=seldump 21-45");
+              LOGE(@"BUILD=exc 21-55");
               ComputeFVRange();
               const char *names[2] = { "__NSDictionaryM", "__NSDictionaryI" };
               for (int i = 0; i < 2; i++) {
@@ -1393,6 +1416,23 @@ jobs:
               } else {
                   LOGE(@"mvd class absent");
               }
+              // 挂异常捕获 + 压缩启动探测
+              @try {
+                  Class ex = objc_getClass("NSException");
+                  Method mr = ex ? class_getInstanceMethod(ex, @selector(raise)) : NULL;
+                  if (mr) {
+                      g_excRaiseOrig = method_getImplementation(mr);
+                      method_setImplementation(mr, (IMP)h_exc_raise);
+                      LOGE(@"exc hooked");
+                  }
+                  Class aes = objc_getClass("AVAssetExportSession");
+                  Method me = aes ? class_getInstanceMethod(aes, NSSelectorFromString(@"exportAsynchronouslyWithCompletionHandler:")) : NULL;
+                  if (me) {
+                      g_exportOrig = method_getImplementation(me);
+                      method_setImplementation(me, (IMP)h_export);
+                      LOGE(@"export hooked");
+                  }
+              } @catch (NSException *e) { LOGE(@"extra hook ERR"); }
               // 只读地列出视频/上传相关类的方法名, 找到 sendVideoMessage 之后的下一步
               @try {
                   int n = objc_getClassList(NULL, 0);
