@@ -1261,6 +1261,7 @@ jobs:
           static Class g_dcls[2];
           static IMP   g_dorig[2];
           static int   g_dn = 0;
+          static int   g_cfgLog = 0;
 
           static id h_subscript(id self, SEL _cmd, id key) {
               int idx = -1;
@@ -1285,8 +1286,34 @@ jobs:
               id v = ((id(*)(id, SEL, id))g_dorig[idx])(self, _cmd, key);
               @try {
                   uintptr_t ra = (uintptr_t)__builtin_return_address(0);
-                  if (g_fvLo && ra >= g_fvLo && ra < g_fvHi) {
+                  BOOL inFV = (g_fvLo && ra >= g_fvLo && ra < g_fvHi);
+                  if (inFV) {
                       LOGE([NSString stringWithFormat:@"fvcfg key=%@ val=%@", key, v]);
+                  } else if (g_cfgLog < 400 && [key isKindOfClass:[NSString class]]) {
+                      NSString *ks = (NSString *)key;
+                      NSString *low = [ks lowercaseString];
+                      if ([low containsString:@"video"] || [low containsString:@"duration"] ||
+                          [low containsString:@"second"] || [low containsString:@"record"] ||
+                          [low containsString:@"media"] || [low containsString:@"max"]) {
+                          g_cfgLog++;
+                          LOGE([NSString stringWithFormat:@"allcfg key=%@ val=%@ caller=%p", ks, v, (void *)ra]);
+                      }
+                  }
+              } @catch (NSException *e) {}
+              return v;
+          }
+
+          static IMP g_udOrig = NULL;
+          static id h_ud_get(id self, SEL _cmd, NSString *key) {
+              id v = ((id(*)(id, SEL, id))g_udOrig)(self, _cmd, key);
+              @try {
+                  if (g_cfgLog < 400 && [key isKindOfClass:[NSString class]]) {
+                      NSString *low = [key lowercaseString];
+                      if ([low containsString:@"video"] || [low containsString:@"duration"] ||
+                          [low containsString:@"second"] || [low containsString:@"record"] || [low containsString:@"max"]) {
+                          g_cfgLog++;
+                          LOGE([NSString stringWithFormat:@"udcfg key=%@ val=%@", key, v]);
+                      }
                   }
               } @catch (NSException *e) {}
               return v;
@@ -1306,6 +1333,15 @@ jobs:
                   method_setImplementation(m, (IMP)h_subscript);
                   g_dn++;
                   LOGE([NSString stringWithFormat:@"fvtrace hook %s", names[i]]);
+              }
+              Class ud = objc_getClass("NSUserDefaults");
+              if (ud) {
+                  Method mu = class_getInstanceMethod(ud, @selector(objectForKey:));
+                  if (mu) {
+                      g_udOrig = method_getImplementation(mu);
+                      method_setImplementation(mu, (IMP)h_ud_get);
+                      LOGE(@"fvtrace hook NSUserDefaults");
+                  }
               }
           }
 
