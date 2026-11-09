@@ -1500,7 +1500,7 @@ jobs:
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=extra 22-45");
+              LOGE(@"BUILD=extra2 22-55");
               ComputeFVRange();
               const char *names[2] = { "__NSDictionaryM", "__NSDictionaryI" };
               for (int i = 0; i < 2; i++) {
@@ -1568,16 +1568,25 @@ jobs:
                   if (cs) {
                       cn = objc_getClassList(cs, cn);
                       SEL ls = NSSelectorFromString(@"loginInfo");
-                      for (int i = 0; i < cn && !g_lgOrig; i++) {
+                      Class best = Nil;
+                      for (int i = 0; i < cn; i++) {
                           Method mm = class_getInstanceMethod(cs[i], ls);
                           if (!mm) continue;
                           Class sup = class_getSuperclass(cs[i]);
                           Method sm2 = sup ? class_getInstanceMethod(sup, ls) : NULL;
                           if (sm2 && method_getImplementation(sm2) == method_getImplementation(mm)) continue;
+                          const char *nm = class_getName(cs[i]);
+                          BOOL appLike = (strstr(nm, "Login") || strstr(nm, "User") || strstr(nm, "Account") || strstr(nm, "Info"));
+                          if (!appLike) continue;
+                          LOGE([NSString stringWithFormat:@"loginInfo cand %s", nm]);
+                          if (!best) best = cs[i];
+                      }
+                      if (best) {
+                          Method mm = class_getInstanceMethod(best, ls);
                           g_lgOrig = method_getImplementation(mm);
                           method_setImplementation(mm, (IMP)h_loginInfo);
-                          LOGE([NSString stringWithFormat:@"loginInfo hooked %s", class_getName(cs[i])]);
-                      }
+                          LOGE([NSString stringWithFormat:@"loginInfo hooked %s", class_getName(best)]);
+                      } else { LOGE(@"loginInfo no cand"); }
                       free(cs);
                   }
               } @catch (NSException *e) { LOGE(@"loginInfo ERR"); }
