@@ -1699,8 +1699,107 @@ jobs:
                   }
               } @catch (NSException *e) {}
           }
+          // 我的页面: 隐藏 UCoin/U聊会员卡 + "未认证"标签
+          static BOOL MeEntryBlocked(NSString *t);
+          static void PatchMeViews(UIView *vv) {
+              @try {
+                  NSMutableArray *stack = [NSMutableArray arrayWithObject:vv];
+                  while (stack.count) {
+                      UIView *v = [stack lastObject]; [stack removeLastObject];
+                      if ([v isKindOfClass:[UILabel class]]) {
+                          NSString *t = ((UILabel *)v).text;
+                          if (!t.length) { for (UIView *sv in v.subviews) [stack addObject:sv]; continue; }
+                          if ([t isEqualToString:@"未认证"]) {
+                              // 隐藏标签本身及其背景容器(向上找小尺寸祖先)
+                              v.hidden = YES;
+                              UIView *p = v.superview;
+                              if (p && p.frame.size.height < 40) p.hidden = YES;
+                              LOGE(@"me unverify label hidden");
+                          } else if ([t containsString:@"UCoin"] || [t containsString:@"续费"] || [t containsString:@"暂未开通"] || [t isEqualToString:@"U聊"]) {
+                              // 向上找卡片容器(宽>300, 高 40-140)隐藏
+                              UIView *p = v;
+                              while (p.superview) {
+                                  p = p.superview;
+                                  if (p.frame.size.width > 300 && p.frame.size.height > 40 && p.frame.size.height < 140) {
+                                      p.hidden = YES;
+                                      LOGE([NSString stringWithFormat:@"me card hidden (%@)", t]);
+                                      break;
+                                  }
+                              }
+                          }
+                      }
+                      for (UIView *sv in v.subviews) [stack addObject:sv];
+                  }
+              } @catch (NSException *e) {}
+          }
+          // 我的页面数据源删除: 从数据数组里直接移除被屏蔽入口(不留空白行)
+          static NSString *MeItemTitle(id item) {
+              if ([item isKindOfClass:[NSString class]]) return item;
+              if ([item isKindOfClass:[NSDictionary class]]) {
+                  for (id v in [(NSDictionary *)item allValues]) {
+                      if ([v isKindOfClass:[NSString class]] && MeEntryBlocked(v)) return v;
+                  }
+                  return nil;
+              }
+              for (NSString *k in @[@"title", @"name", @"titleStr", @"text", @"menuName", @"itemName", @"titleString"]) {
+                  @try {
+                      id v = [item valueForKey:k];
+                      if ([v isKindOfClass:[NSString class]] && [(NSString *)v length]) return v;
+                  } @catch (NSException *e) {}
+              }
+              return nil;
+          }
+          static NSArray *MeFilterArray(NSArray *src, BOOL *changed) {
+              NSMutableArray *out = [NSMutableArray arrayWithCapacity:src.count];
+              for (id item in src) {
+                  if ([item isKindOfClass:[NSArray class]]) {
+                      [out addObject:MeFilterArray(item, changed)];
+                      continue;
+                  }
+                  NSString *t = MeItemTitle(item);
+                  if (t && MeEntryBlocked(t)) { *changed = YES; LOGE([NSString stringWithFormat:@"me purge rm \"%@\"", t]); continue; }
+                  [out addObject:item];
+              }
+              return out;
+          }
+          static int s_purged = 0;
+          static void MePurgeData(id vc, id tv) {
+              if (s_purged) return;
+              @try {
+                  Class k = [vc class];
+                  BOOL any = NO;
+                  while (k && k != [NSObject class]) {
+                      unsigned int ic = 0;
+                      Ivar *ivs = class_copyIvarList(k, &ic);
+                      for (unsigned int i = 0; i < ic; i++) {
+                          const char *te = ivar_getTypeEncoding(ivs[i]);
+                          if (!te || te[0] != '@') continue;
+                          id val = object_getIvar(vc, ivs[i]);
+                          if (![val isKindOfClass:[NSArray class]]) continue;
+                          BOOL chg = NO;
+                          NSArray *filtered = MeFilterArray(val, &chg);
+                          if (chg) { object_setIvar(vc, ivs[i], filtered); any = YES; LOGE([NSString stringWithFormat:@"me purge ivar %s", ivar_getName(ivs[i])]); }
+                      }
+                      if (ivs) free(ivs);
+                      k = class_getSuperclass(k);
+                  }
+                  if (any) {
+                      s_purged = 1;
+                      dispatch_async(dispatch_get_main_queue(), ^{ @try { [tv reloadData]; } @catch (NSException *e) {} });
+                  }
+              } @catch (NSException *e) {}
+          }
+          static int s_inVcAppear = 0;
           static void h_vc_appear(id self, SEL _cmd, BOOL anim) {
-              ((void(*)(id, SEL, BOOL))g_vcaOrig)(self, _cmd, anim);
+              if (s_inVcAppear) {
+                  // 递归保护: 子类原实现里 [super viewDidAppear:] 落回基类被换的 IMP 时直接放行
+                  if (g_vcaOrig) ((void(*)(id, SEL, BOOL))g_vcaOrig)(self, _cmd, anim);
+                  return;
+              }
+              s_inVcAppear = 1;
+              IMP o = FindOrig(self, _cmd);
+              if (o) ((void(*)(id, SEL, BOOL))o)(self, _cmd, anim);
+              else if (g_vcaOrig) ((void(*)(id, SEL, BOOL))g_vcaOrig)(self, _cmd, anim);
               @try {
                   NSString *cls = NSStringFromClass([self class]);
                   if ([cls containsString:@"Login"]) {
@@ -1708,6 +1807,14 @@ jobs:
                       for (int d = 0; d < 3; d++) {
                           dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(d * 0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                               @try { UIView *vv = [self valueForKey:@"view"]; if (vv) PatchLoginViews(vv); } @catch (NSException *e) {}
+                          });
+                      }
+                  }
+                  if ([cls isEqualToString:@"WKMeVC"]) {
+                      // 我的页面: 隐藏 UCoin/U聊会员卡 + "未认证"标签, 三次压制
+                      for (int d = 0; d < 3; d++) {
+                          dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(d * 0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                              @try { UIView *vv = [self valueForKey:@"view"]; if (vv) PatchMeViews(vv); } @catch (NSException *e) {}
                           });
                       }
                   }
@@ -1723,6 +1830,30 @@ jobs:
                           } @catch (NSException *e) {}
                       });
                   }
+              } @catch (NSException *e) {}
+              s_inVcAppear = 0;
+          }
+          // 对重写了 viewDidAppear 的目标 VC 逐个 hook(基类 hook 碰不到重写类)
+          static void HookVCDirect(void) {
+              @try {
+                  int cn = objc_getClassList(NULL, 0);
+                  Class *cs = (Class *)malloc(sizeof(Class) * (cn > 0 ? cn : 1));
+                  cn = objc_getClassList(cs, cn);
+                  SEL sel = @selector(viewDidAppear:);
+                  for (int i = 0; i < cn; i++) {
+                      const char *nm = class_getName(cs[i]);
+                      if (!nm) continue;
+                      if (!(strstr(nm, "Login") || strstr(nm, "WKMeVC") || strstr(nm, "Contacts"))) continue;
+                      Method m = FindOwnMethod(cs[i], sel);
+                      if (!m) continue;
+                      IMP orig = method_getImplementation(m);
+                      if (orig == (IMP)h_vc_appear) continue;
+                      if (!g_origMap) g_origMap = [NSMutableDictionary dictionary];
+                      g_origMap[MapKey(cs[i], sel)] = [NSValue valueWithPointer:orig];
+                      method_setImplementation(m, (IMP)h_vc_appear);
+                      LOGE([NSString stringWithFormat:@"vc-direct hook %s", nm]);
+                  }
+                  free(cs);
               } @catch (NSException *e) {}
           }
 
@@ -1800,6 +1931,8 @@ jobs:
                   if (blocked) {
                       [(UIView *)cell setHidden:YES];
                       [(UIView *)cell setClipsToBounds:YES];
+                      // 触发数据源清除(一次性): 从数据数组里删掉这些入口, 根治不留空白
+                      MePurgeData(self, tv);
                   }
               } @catch (NSException *e) {}
               return cell;
@@ -2072,9 +2205,9 @@ jobs:
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=brand5 07-10");
+              LOGE(@"BUILD=brand6 07-40");
               ComputeFVRange();
-              // 视图树 dump: hook 全部相关 VC 的 viewDidAppear
+              // 视图树 dump: hook 基类 viewDidAppear(兜底子类未重写的 VC)
               @try {
                   Class ui = objc_getClass("UIViewController");
                   if (ui) {
@@ -2082,6 +2215,11 @@ jobs:
                       if (m) { g_vcaOrig = method_getImplementation(m); method_setImplementation(m, (IMP)h_vc_appear); LOGE(@"vc appear dump hooked"); }
                   }
               } @catch (NSException *e) {}
+              // 关键: 重写了 viewDidAppear 的目标 VC 基类 hook 碰不到, 遍历类列表逐个 hook
+              // (类懒加载, 3s/8s/20s 各试一次)
+              HookVCDirect();
+              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ HookVCDirect(); });
+              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ HookVCDirect(); });
               // 精准 UI: 登录 logo 替换(imageNamed 命中 LaunchIcon)
               @try {
                   Method m = class_getClassMethod([UIImage class], @selector(imageNamed:));
