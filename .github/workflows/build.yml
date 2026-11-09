@@ -1742,29 +1742,7 @@ jobs:
               for (NSString *b in bad) if ([t containsString:b]) return YES;
               return NO;
           }
-          // hook UITableView dataSource numberOfRowsInSection: 对 WKMeVC 少报行数不保险(cell 复用会错位)
-          // 改为 hook WKMeItemCell 布局: 命中即压扁隐藏
-          static IMP g_cellLsuOrig = NULL;
-          static void h_cell_layout(id self, SEL _cmd) {
-              @try {
-                  NSString *cls = NSStringFromClass([self class]);
-                  if ([cls isEqualToString:@"WKMeItemCell"]) {
-                      UILabel *lab = nil;
-                      @try { lab = [(UITableViewCell *)self textLabel]; } @catch (NSException *e) {}
-                      if (lab && MeEntryBlocked(lab.text)) {
-                          [(UIView *)self setHidden:YES];
-                          [(UIView *)self setFrame:CGRectMake(0, ((UIView *)self).frame.origin.y, 402, 0)];
-                          [(UITableViewCell *)self setUserInteractionEnabled:NO];
-                      }
-                  }
-              } @catch (NSException *e) {}
-              ((void(*)(id, SEL))g_cellLsuOrig)(self, _cmd);
-          }
-          // 更稳的做法: hook WKMeVC 的 tableView heightForRow -> 0, 配 cellForRow 返回空
-          static IMP g_meHeightOrig = NULL;
-          static double h_me_height(id self, SEL _cmd, id tv, id ip) {
-              return ((double(*)(id, SEL, id, id))g_meHeightOrig)(self, _cmd, tv, ip);
-          }
+          // 更稳的做法: hook WKMeVC 的 cellForRow, 命中即整格压扁
           static IMP g_meCellOrig = NULL;
           static id h_me_cell(id self, SEL _cmd, id tv, id ip) {
               id cell = ((id(*)(id, SEL, id, id))g_meCellOrig)(self, _cmd, tv, ip);
