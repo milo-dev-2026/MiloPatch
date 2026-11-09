@@ -1213,12 +1213,15 @@ jobs:
           }
 
           // 运行时 patch FALiteVideo sendVideoMessage 内部远程配置跳过
-          // 只遍历 dyld, 不调 dlopen (constructor 时机太早 dlopen 触发依赖链加载 → crash)
-          #include <mach/mach.h>
+          // 只遍历 dyld, 不调 dlopen; 手动声明 vm_protect (避免 include mach/mach.h 污染 signal 等符号)
           #include <mach-o/dyld.h>
           #include <mach-o/loader.h>
           #include <unistd.h>
           #include <string.h>
+          #include <stdint.h>
+          extern int vm_protect(int, unsigned long, unsigned long, int, int);
+          extern int mach_task_self(void);
+          #define VM_PROT_ALL 0x07
 
           static void PatchFALiteVideoSVM(void) {
               @autoreleasepool {
@@ -1255,12 +1258,12 @@ jobs:
                   LOGE([NSString stringWithFormat:@"patch-svm: base=%p sz=%lu", base, sz]);
                   uint32_t t1 = 0x3400075b, t2 = 0x3600139b, rep = 0x5280043b;
                   int patched = 0;
-                  vm_size_t ps = (vm_size_t)getpagesize();
+                  unsigned long ps = (unsigned long)getpagesize();
                   for (unsigned long i = 0; i + 4 <= sz; i += 4) {
                       uint32_t insn = *(uint32_t *)(base + i);
                       if (insn == t1 || insn == t2) {
-                          vm_address_t page = (vm_address_t)(base + i) & ~(ps - 1);
-                          vm_protect(mach_task_self(), page, ps, TRUE, VM_PROT_ALL);
+                          unsigned long page = ((unsigned long)(base + i)) & ~(ps - 1);
+                          vm_protect(mach_task_self(), page, ps, 1, VM_PROT_ALL);
                           *(uint32_t *)(base + i) = rep;
                           LOGE([NSString stringWithFormat:@"patch-svm: @0x%04lx 0x%08x->0x%08x", i, insn, rep]);
                           patched++;
