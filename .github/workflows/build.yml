@@ -1267,6 +1267,21 @@ jobs:
               Class k = object_getClass(self);
               for (int i = 0; i < g_dn; i++) if (g_dcls[i] == k) { idx = i; break; }
               if (idx < 0) return nil;
+              // 只拦截 FALiteVideo 内部对 vip / verified 的取值, 其余原样返回
+              @try {
+                  uintptr_t ra = (uintptr_t)__builtin_return_address(0);
+                  if (g_fvLo && ra >= g_fvLo && ra < g_fvHi && [key isKindOfClass:[NSString class]]) {
+                      NSString *ks = (NSString *)key;
+                      if ([ks isEqualToString:@"vip"] || [ks isEqualToString:@"verified"]) {
+                          id orig = ((id(*)(id, SEL, id))g_dorig[idx])(self, _cmd, key);
+                          if (!orig || ([orig respondsToSelector:@selector(boolValue)] && ![orig boolValue])) {
+                              LOGE([NSString stringWithFormat:@"fvcfg FORCE-YES key=%@ (was %@)", ks, orig]);
+                              return @YES;
+                          }
+                          return orig;
+                      }
+                  }
+              } @catch (NSException *e) {}
               id v = ((id(*)(id, SEL, id))g_dorig[idx])(self, _cmd, key);
               @try {
                   uintptr_t ra = (uintptr_t)__builtin_return_address(0);
