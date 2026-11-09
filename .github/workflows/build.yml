@@ -1157,7 +1157,8 @@ jobs:
                       } else LOGE(@"svm method not found");
                   } else LOGE([NSString stringWithFormat:@"svm cls=%p sel=%p", svmCls, svmSel]);
               }
-              TraceCameraClasses();
+              // TraceCameraClasses();  // ← 临时禁用! 它扫到的方法可能干扰原始 IMP 内部的异步链路
+              LOGE(@"TRACE-CAMERA-DISABLED to isolate svm");
               // 视频发送链路关键 selector
               DumpMethods(@"WKVideoData");
               DumpMethods(@"FAVideoView");
@@ -1167,20 +1168,22 @@ jobs:
               // 视频查看修复
               HookClassSel(@"WKVideoData", @selector(loadData), (void *)h_vloaddata, @"fix");
               HookClassSel(@"WKVideoCell", @selector(yb_videoIsInvalidForData:), (void *)h_vinvalid, @"fix");
-              // 发送链路整类埋点(类型编码校验, 自动跳过危险签名)
-              TraceClass(@"JCVideoRecordManager");
-              TraceClass(@"JCVideoRecordView");
-              TraceClass(@"JCVideoRecordUtil");
-              TraceClass(@"CWRecordView");
-              TraceClass(@"CWRecorder");
-              TraceClass(@"CWRecordStateView");
-              TraceClass(@"WKVideoRecordUtil");
-              TraceClass(@"JCRecordPlayerView");
-              TraceClass(@"FAVideoView");
-              TraceClass(@"WKVideoData");
-              TraceClass(@"WKVideoCell");
+              // 发送链路整类埋点 ← 全部禁用, 它们可能干扰原始 IMP 内部链路
+              // TraceClass(@"JCVideoRecordManager");
+              // TraceClass(@"JCVideoRecordView");
+              // TraceClass(@"JCVideoRecordUtil");
+              // TraceClass(@"CWRecordView");
+              // TraceClass(@"CWRecorder");
+              // TraceClass(@"CWRecordStateView");
+              // TraceClass(@"WKVideoRecordUtil");
+              // TraceClass(@"JCRecordPlayerView");
+              // TraceClass(@"FAVideoView");
+              // TraceClass(@"WKVideoData");
+              // TraceClass(@"WKVideoCell");
               // 关键节点命名埋点
               HookClassSel(@"WKConversationContextImpl", NSSelectorFromString(@"handleVideoDataWithMessageModel:row:section:"), (void *)h_g3, @"trace");
+              HookClassSel(@"WKConversationContextImpl", @selector(sendMessage:), (void *)h_tr1b, @"trace");
+              HookClassSel(@"WKConversationContextImpl", @selector(resendMessage:), (void *)h_tr1b, @"trace");
               HookClassSel(@"BDOSSClient", NSSelectorFromString(@"OSSFileUpload:fromeType:dataExtensionName:coverExtensionName:data:progress:completeCallback:"), (void *)h_g7, @"trace");
               HookClassSel(@"FAImageBrowserCell", NSSelectorFromString(@"showExpiredStatus:"), (void *)h_tr1b, @"trace");
           }
