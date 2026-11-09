@@ -275,7 +275,7 @@ jobs:
           }
           static BOOL RunLogWorthy(NSString *s) {
               static NSArray *kws = nil;
-              if (!kws) kws = @[@"vtrace", @"vinvalid", @"vloaddata", @"vdatasrc", @"hookok", @"hookmiss", @"traceclass", @"methods ", @"ybfixed", @"CRASH", @"presentVC", @"pushVC"];
+              if (!kws) kws = @[@"vtrace", @"vinvalid", @"vloaddata", @"vdatasrc", @"hookok", @"hookmiss", @"traceclass", @"methods ", @"ybfixed", @"CRASH", @"presentVC", @"pushVC", @"svm-", @"nsurl-"];
               for (NSString *k in kws) if ([s rangeOfString:k].location != NSNotFound) return YES;
               return NO;
           }
@@ -945,6 +945,39 @@ jobs:
           static uintptr_t h_g5(id self, SEL _cmd, uintptr_t a1, uintptr_t a2, uintptr_t a3, uintptr_t a4, uintptr_t a5) { BOOL d = DescFlag(self, _cmd); TLog(self, _cmd, d ? (__bridge id)(void *)a1 : nil, a2, a3, d); IMP o = FindOrig(self, _cmd); return o ? ((uintptr_t(*)(id, SEL, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t))o)(self, _cmd, a1, a2, a3, a4, a5) : 0; }
           static uintptr_t h_g6(id self, SEL _cmd, uintptr_t a1, uintptr_t a2, uintptr_t a3, uintptr_t a4, uintptr_t a5, uintptr_t a6) { BOOL d = DescFlag(self, _cmd); TLog(self, _cmd, d ? (__bridge id)(void *)a1 : nil, a2, a3, d); IMP o = FindOrig(self, _cmd); return o ? ((uintptr_t(*)(id, SEL, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t))o)(self, _cmd, a1, a2, a3, a4, a5, a6) : 0; }
           static uintptr_t h_g7(id self, SEL _cmd, uintptr_t a1, uintptr_t a2, uintptr_t a3, uintptr_t a4, uintptr_t a5, uintptr_t a6, uintptr_t a7) { BOOL d = DescFlag(self, _cmd); TLog(self, _cmd, d ? (__bridge id)(void *)a1 : nil, a2, a3, d); IMP o = FindOrig(self, _cmd); return o ? ((uintptr_t(*)(id, SEL, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t))o)(self, _cmd, a1, a2, a3, a4, a5, a6, a7) : 0; }
+
+          static id h_svm(id self, SEL _cmd, id videoArg, id contextArg) {
+              @try {
+                  NSString *va = [videoArg isKindOfClass:[NSString class]] ? videoArg
+                      : ([videoArg respondsToSelector:@selector(description)] ? [videoArg description] : @"(non-string)");
+                  NSString *ca = [contextArg isKindOfClass:[NSString class]] ? contextArg
+                      : ([contextArg respondsToSelector:@selector(description)] ? [contextArg description] : @"(nil)");
+                  LOGE([NSString stringWithFormat:@"svm-CALL self=%@ videoArg=%@ contextArg=%@",
+                      NSStringFromClass([self class]),
+                      va.length > 200 ? [va substringToIndex:200] : va,
+                      ca.length > 200 ? [ca substringToIndex:200] : ca]);
+                  if (va.length == 0 || va.length < 5) {
+                      LOGE([NSString stringWithFormat:@"svm-WARN empty/invalid videoArg! videoArg class=%@", NSStringFromClass([videoArg class])]);
+                  }
+              } @catch (NSException *e) { LOGE([@"svm-ERR " stringByAppendingString:e.reason]); }
+              IMP o = FindOrig(self, _cmd);
+              id r = o ? ((id(*)(id, SEL, id, id))o)(self, _cmd, videoArg, contextArg) : nil;
+              @try { LOGE([NSString stringWithFormat:@"svm-RET %@", r ? [r description] : @"(nil)"]); } @catch (NSException *e) {}
+              return r;
+          }
+
+          static NSURL *h_nsurl_init(id self, SEL _cmd, id url, id options) {
+              @try {
+                  NSString *us = [url isKindOfClass:[NSString class]] ? url
+                      : ([url respondsToSelector:@selector(description)] ? [url description] : @"(nil)");
+                  LOGE([NSString stringWithFormat:@"nsurl-init input=%@", us]);
+              } @catch (NSException *e) {}
+              IMP o = FindOrig(self, _cmd);
+              NSURL *r = o ? ((NSURL *(*)(id, SEL, id, id))o)(self, _cmd, url, options) : nil;
+              @try { if (!r) LOGE(@"nsurl-init RETURNED NIL!!!"); } @catch (NSException *e) {}
+              return r;
+          }
+
           static NSArray *SkipSels(void) {
               static NSArray *s = nil;
               if (!s) s = @[@"description", @"debugDescription", @"dealloc", @".cxx_destruct", @"hash", @"isEqual:", @"class", @"superclass", @"observeValueForKeyPath:ofObject:change:context:", @"layoutSubviews", @"drawRect:", @"setNeedsLayout", @"setNeedsDisplay", @"setNeedsUpdateConstraints", @"updateConstraints", @"copy", @"mutableCopy", @"respondsToSelector:", @"conformsToProtocol:", @"isKindOfClass:", @"methodSignatureForSelector:", @"forwardInvocation:", @"setValue:forKey:", @"valueForKey:", @"willMoveToSuperview:", @"didMoveToSuperview", @"willMoveToWindow:", @"didMoveToWindow", @"setFrame:", @"setBounds:", @"setCenter:", @"setAlpha:", @"setHidden:", @"setBackgroundColor:"];
@@ -1119,15 +1152,26 @@ jobs:
               if (!g_origMap) g_origMap = [NSMutableDictionary dictionary];
               if (!g_descMap) g_descMap = [NSMutableDictionary dictionary];
               TraceCameraClasses();
+              // 精准 hook sendVideoMessage:context: —— 打印参数和返回值
+              {
+                  SEL svmSel = NSSelectorFromString(@"sendVideoMessage:context:");
+                  Class svmCls = objc_getClass("WKPanelCameraFuncItem");
+                  if (svmCls && svmSel) {
+                      Method m = FindOwnMethod(svmCls, svmSel);
+                      if (m) {
+                          char rt[32]; method_getReturnType(m, rt, sizeof(rt));
+                          LOGE([NSString stringWithFormat:@"svm-sel hooked rt=%s", rt]);
+                          void *origIMP = method_getImplementation(m);
+                          g_origMap[MapKey(svmCls, svmSel)] = [NSValue valueWithPointer:origIMP];
+                          g_descMap[MapKey(svmCls, svmSel)] = @YES;
+                          method_setImplementation(m, (IMP)h_svm);
+                          LOGE(@"svm-hook OK");
+                      } else LOGE(@"svm method not found");
+                  } else LOGE([NSString stringWithFormat:@"svm cls=%p sel=%p", svmCls, svmSel]);
+              }
+              // hook NSURL initWithURL:options: —— 看是谁在创建 URL, 输入是什么
+              HookClassSel([NSURL class], @selector(initWithURL:options:), (void *)h_nsurl_init, @"svm-debug");
               // 视频发送链路关键 selector
-              HookSelAppWide(@"takePhoto:doneBlock:cancelBlock:", 3);
-              HookSelAppWide(@"setTakeDoneBlock:", 1);
-              HookSelAppWide(@"compressVideo", 0);
-              HookSelAppWide(@"compressVideo:complete:", 2);
-              HookSelAppWide(@"executeFFmpegCommand:", 1);
-              HookSelAppWide(@"executeFFmpegTranscoding:outputPath:", 2);
-              HookSelAppWide(@"buildFFmpegCommandWithTSURLs:outputPath:", 2);
-              HookSelAppWide(@"captureOutput:didFinishRecordingToOutputFileAtURL:fromConnections:error:", 4);
               DumpMethods(@"WKVideoData");
               DumpMethods(@"FAVideoView");
               DumpMethods(@"JCVideoRecordManager");
