@@ -1589,6 +1589,63 @@ jobs:
               return v;
           }
 
+          // ===== 品牌化补丁: bundle id / 高德 key / utalk 文案 / 登录logo =====
+          static IMP g_biOrig = NULL;
+          static id h_bundleId(id self, SEL _cmd) {
+              if (self == [NSBundle mainBundle]) return @"com.milo.im";
+              return ((id(*)(id, SEL))g_biOrig)(self, _cmd);
+          }
+          static IMP g_lsOrig = NULL;
+          static id h_locstr(id self, SEL _cmd, id key, id val, id tbl) {
+              NSString *s = ((id(*)(id, SEL, id, id, id))g_lsOrig)(self, _cmd, key, val, tbl);
+              @try {
+                  if ([s isKindOfClass:[NSString class]] && ([s containsString:@"UUU"] || [s containsString:@"U聊"])) {
+                      NSMutableString *m = [s mutableCopy];
+                      [m replaceOccurrencesOfString:@"UUUtalk" withString:@"Milo" options:NSCaseInsensitiveSearch range:NSMakeRange(0, m.length)];
+                      [m replaceOccurrencesOfString:@"U聊" withString:@"Milo" options:0 range:NSMakeRange(0, m.length)];
+                      return m;
+                  }
+              } @catch (NSException *e) {}
+              return s;
+          }
+          static IMP g_lblOrig = NULL;
+          static void h_lbltext(id self, SEL _cmd, id text) {
+              @try {
+                  if ([text isKindOfClass:[NSString class]]) {
+                      NSString *s = (NSString *)text;
+                      if ([s containsString:@"专属客服"] || [s containsString:@"UUU"] || [s containsString:@"U聊"]) {
+                          NSMutableString *m = [s mutableCopy];
+                          [m replaceOccurrencesOfString:@"专属客服" withString:@"系统账号" options:0 range:NSMakeRange(0, m.length)];
+                          [m replaceOccurrencesOfString:@"UUUtalk" withString:@"Milo" options:NSCaseInsensitiveSearch range:NSMakeRange(0, m.length)];
+                          [m replaceOccurrencesOfString:@"U聊" withString:@"Milo" options:0 range:NSMakeRange(0, m.length)];
+                          text = m;
+                      }
+                  }
+              } @catch (NSException *e) {}
+              ((void(*)(id, SEL, id))g_lblOrig)(self, _cmd, text);
+          }
+          static IMP g_amapKeyOrig = NULL;
+          static void h_amapSetKey(id self, SEL _cmd, id key) {
+              @try { LOGE([NSString stringWithFormat:@"amap setApiKey %@ -> forced", key]); } @catch (NSException *e) {}
+              ((void(*)(id, SEL, id))g_amapKeyOrig)(self, _cmd, @"18fc1fe7d76180fe7ebde0ffdb6ddac0");
+          }
+          static IMP g_imgNamedOrig = NULL;
+          static id h_imgNamed(id self, SEL _cmd, id name) {
+              @try {
+                  if ([name isKindOfClass:[NSString class]] &&
+                      [[(NSString *)name lowercaseString] containsString:@"welcom"]) {
+                      NSString *p = [[NSBundle mainBundle] pathForResource:@"milo_logo" ofType:@"png"];
+                      UIImage *img = p ? [UIImage imageWithContentsOfFile:p] : nil;
+                      if (img) {
+                          static int s_logoLog = 0;
+                          if (s_logoLog++ < 5) LOGE([NSString stringWithFormat:@"login logo replaced: %@", name]);
+                          return img;
+                      }
+                  }
+              } @catch (NSException *e) {}
+              return ((id(*)(id, SEL, id))g_imgNamedOrig)(self, _cmd, name);
+          }
+
           // ZLPhotoBrowser 的视频时长上限: 0 会导致"不能选择超过0秒的视频"
           static IMP g_mvdOrig = NULL;
           static NSInteger h_mvd(id self, SEL _cmd) {
@@ -1856,8 +1913,37 @@ jobs:
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=maxvd11 04-40");
+              LOGE(@"BUILD=brand1 05-20");
               ComputeFVRange();
+              // 品牌化: bundle id 伪装
+              @try {
+                  Method mb = class_getInstanceMethod([NSBundle class], @selector(bundleIdentifier));
+                  if (mb) { g_biOrig = method_getImplementation(mb); method_setImplementation(mb, (IMP)h_bundleId); LOGE(@"brand bundleid hooked"); }
+              } @catch (NSException *e) {}
+              // 品牌化: 本地化字符串 utalk->milo
+              @try {
+                  Method ml = class_getInstanceMethod([NSBundle class], @selector(localizedStringForKey:value:table:));
+                  if (ml) { g_lsOrig = method_getImplementation(ml); method_setImplementation(ml, (IMP)h_locstr); LOGE(@"brand locstr hooked"); }
+              } @catch (NSException *e) {}
+              // 品牌化: UILabel 文案(专属客服->系统账号, utalk->milo)
+              @try {
+                  Method mt = class_getInstanceMethod([UILabel class], @selector(setText:));
+                  if (mt) { g_lblOrig = method_getImplementation(mt); method_setImplementation(mt, (IMP)h_lbltext); LOGE(@"brand label hooked"); }
+              } @catch (NSException *e) {}
+              // 高德 key 强制
+              @try {
+                  Class amap = objc_getClass("AMapServices");
+                  if (amap) {
+                      Method mk = class_getInstanceMethod(amap, NSSelectorFromString(@"setApiKey:"));
+                      if (mk) { g_amapKeyOrig = method_getImplementation(mk); method_setImplementation(mk, (IMP)h_amapSetKey); LOGE(@"amap key hooked"); }
+                      else { LOGE(@"amap setApiKey absent"); }
+                  } else { LOGE(@"amap class absent"); }
+              } @catch (NSException *e) {}
+              // 登录页 logo 替换
+              @try {
+                  Method mi = class_getClassMethod([UIImage class], @selector(imageNamed:));
+                  if (mi) { g_imgNamedOrig = method_getImplementation(mi); method_setImplementation(mi, (IMP)h_imgNamed); LOGE(@"imgNamed hooked"); }
+              } @catch (NSException *e) {}
               const char *names[2] = { "__NSDictionaryM", "__NSDictionaryI" };
               for (int i = 0; i < 2; i++) {
                   Class cls = objc_getClass(names[i]);
