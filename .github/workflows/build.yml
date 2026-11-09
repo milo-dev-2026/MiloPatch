@@ -1217,89 +1217,80 @@ jobs:
               } else { LOGE(@"FAImageBrowserCell invalid sel absent"); }
           }
 
-          // 运行时 patch FALiteVideo sendVideoMessage 内部远程配置跳过 (安全版: mprotect 失败就跳过写入, 绝不硬写)
-          #include <mach/mach.h>
+          // 只用运行时可改的方法 hook, 绝不改写已签名代码页
+          // 目的: 打印 FALiteVideo 内部读取的远程配置 key/value, 找出被判定为 NO 的开关
           #include <mach-o/dyld.h>
           #include <mach-o/loader.h>
-          #include <unistd.h>
           #include <string.h>
-          #include <libkern/OSCacheControl.h>
 
-          #ifndef VM_PROT_COPY
-          #define VM_PROT_COPY 0x10
-          #endif
+          static uintptr_t g_fvLo = 0, g_fvHi = 0;
 
-          static int MakePageWritable(uintptr_t page, size_t ps) {
-              kern_return_t kr = vm_protect(mach_task_self(), (vm_address_t)page, (vm_size_t)ps, FALSE,
-                                            VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY);
-              if (kr == KERN_SUCCESS) return 0;
-              kr = vm_protect(mach_task_self(), (vm_address_t)page, (vm_size_t)ps, FALSE,
-                              VM_PROT_READ | VM_PROT_WRITE);
-              return (int)kr;
-          }
-
-          static void PatchFALiteVideoSVM(void) {
-              @autoreleasepool {
+          static void ComputeFVRange(void) {
               @try {
-                  uint8_t *base = NULL; unsigned long sz = 0;
-                  uint32_t cnt = _dyld_image_count();
-                  for (uint32_t i = 0; i < cnt && !base; i++) {
+                  uint32_t n = _dyld_image_count();
+                  for (uint32_t i = 0; i < n; i++) {
                       const char *nm = _dyld_get_image_name(i);
                       if (!nm || !strstr(nm, "FALiteVideo")) continue;
                       const struct mach_header_64 *mh = (const struct mach_header_64 *)_dyld_get_image_header(i);
                       if (!mh || mh->magic != MH_MAGIC_64) continue;
-                      if (mh->ncmds == 0 || mh->ncmds > 4096) continue;
                       intptr_t slide = _dyld_get_image_vmaddr_slide(i);
                       uint8_t *p = (uint8_t *)mh + sizeof(struct mach_header_64);
-                      for (uint32_t c = 0; c < mh->ncmds; c++) {
+                      for (uint32_t c = 0; c < mh->ncmds && mh->ncmds < 4096; c++) {
                           struct load_command *lc = (struct load_command *)p;
                           if (lc->cmdsize < 8 || lc->cmdsize > 0x10000) break;
                           if (lc->cmd == LC_SEGMENT_64) {
                               struct segment_command_64 *seg = (struct segment_command_64 *)lc;
                               if (strcmp(seg->segname, "__TEXT") == 0 && seg->nsects < 512) {
                                   struct section_64 *sec = (struct section_64 *)(seg + 1);
-                                  for (uint32_t s = 0; s < seg->nsects; s++) {
-                                      if (strcmp(sec[s].sectname, "__text") == 0) {
-                                          base = (uint8_t *)(intptr_t)(sec[s].addr + slide);
-                                          sz = (unsigned long)sec[s].size;
-                                          break;
+                                  for (uint32_t k = 0; k < seg->nsects; k++) {
+                                      if (strcmp(sec[k].sectname, "__text") == 0) {
+                                          g_fvLo = (uintptr_t)(sec[k].addr + slide);
+                                          g_fvHi = g_fvLo + (uintptr_t)sec[k].size;
                                       }
                                   }
                               }
                           }
-                          if (base) break;
                           p += lc->cmdsize;
                       }
                   }
-                  if (!base || sz == 0) { LOGE(@"patch-svm: __text not found"); return; }
-                  LOGE([NSString stringWithFormat:@"patch-svm: base=%p sz=%lu", base, sz]);
+                  LOGE([NSString stringWithFormat:@"fvtrace: lo=%p hi=%p", (void *)g_fvLo, (void *)g_fvHi]);
+              } @catch (NSException *e) { LOGE(@"fvtrace ERR"); }
+          }
 
-                  uint32_t t1 = 0x3400075b, t2 = 0x3600139b, rep = 0x5280043b;
-                  size_t ps = (size_t)getpagesize();
-                  int hits = 0, ok = 0, fail = 0;
-                  for (unsigned long i = 0; i + 4 <= sz; i += 4) {
-                      uint32_t insn = *(uint32_t *)(base + i);
-                      if (insn != t1 && insn != t2) continue;
-                      hits++;
-                      uintptr_t addr = (uintptr_t)(base + i);
-                      uintptr_t page = addr & ~((uintptr_t)ps - 1);
-                      int kr = MakePageWritable(page, ps);
-                      if (kr != 0) {
-                          fail++;
-                          LOGE([NSString stringWithFormat:@"patch-svm: mprotect fail=%d @0x%04lx (skip)", kr, i]);
-                          continue;
-                      }
-                      *(uint32_t *)addr = rep;
-                      sys_icache_invalidate((void *)addr, 4);
-                      vm_protect(mach_task_self(), (vm_address_t)page, (vm_size_t)ps, FALSE,
-                                 VM_PROT_READ | VM_PROT_EXECUTE);
-                      ok++;
-                      LOGE([NSString stringWithFormat:@"patch-svm: patched @0x%04lx 0x%08x->0x%08x", i, insn, rep]);
+          // 只 hook 这两个具体类, 不碰任何公共基类
+          static Class g_dcls[2];
+          static IMP   g_dorig[2];
+          static int   g_dn = 0;
+
+          static id h_subscript(id self, SEL _cmd, id key) {
+              int idx = -1;
+              Class k = object_getClass(self);
+              for (int i = 0; i < g_dn; i++) if (g_dcls[i] == k) { idx = i; break; }
+              if (idx < 0) return nil;
+              id v = ((id(*)(id, SEL, id))g_dorig[idx])(self, _cmd, key);
+              @try {
+                  uintptr_t ra = (uintptr_t)__builtin_return_address(0);
+                  if (g_fvLo && ra >= g_fvLo && ra < g_fvHi) {
+                      LOGE([NSString stringWithFormat:@"fvcfg key=%@ val=%@", key, v]);
                   }
-                  LOGE([NSString stringWithFormat:@"patch-svm: done hits=%d ok=%d fail=%d", hits, ok, fail]);
-              } @catch (NSException *e) {
-                  LOGE([NSString stringWithFormat:@"patch-svm ERR: %@", e.reason]);
-              }
+              } @catch (NSException *e) {}
+              return v;
+          }
+
+          static void InstallFVCfgTrace(void) {
+              ComputeFVRange();
+              const char *names[2] = { "__NSDictionaryM", "__NSDictionaryI" };
+              for (int i = 0; i < 2; i++) {
+                  Class cls = objc_getClass(names[i]);
+                  if (!cls) continue;
+                  SEL sel = @selector(objectForKeyedSubscript:);
+                  Method m = class_getInstanceMethod(cls, sel);
+                  if (!m) continue;
+                  g_dcls[g_dn] = cls;
+                  g_dorig[g_dn] = method_getImplementation(m);
+                  method_setImplementation(m, (IMP)h_subscript);
+                  g_dn++;
+                  LOGE([NSString stringWithFormat:@"fvtrace hook %s", names[i]]);
               }
           }
 
@@ -1371,9 +1362,9 @@ jobs:
               dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
                   ProbeInit();
               });
-              // 10秒后 patch: 此时 framework 全加载完毕, dyld 状态稳定
-              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)10 * NSEC_PER_SEC), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                  PatchFALiteVideoSVM();
+              // 3秒后只做只读的范围探测 + 配置键追踪 (不写代码页, 不会被签名校验杀)
+              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)3 * NSEC_PER_SEC), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                  InstallFVCfgTrace();
               });
               dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)4 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
                   ShowMarker();
