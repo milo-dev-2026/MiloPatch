@@ -27,6 +27,7 @@ jobs:
         run: |
           cat > hook.m << 'OBJC'
           #import <UIKit/UIKit.h>
+          #import <AVFoundation/AVFoundation.h>
           #import <objc/runtime.h>
           #include <string.h>
           #include <signal.h>
@@ -960,6 +961,31 @@ jobs:
                   if (!videoArg || ([videoArg isKindOfClass:[NSString class]] && [videoArg length] < 5)) {
                       LOGE(@"svm-WARN videoArg is nil or too short!");
                   }
+                  // 自测: 视频文件大小 / 时长 / 轨道数, 以及登录信息里的 vip 字段
+                  @try {
+                      NSURL *u = [videoArg isKindOfClass:[NSURL class]] ? (NSURL *)videoArg
+                          : ([videoArg isKindOfClass:[NSString class]] ? [NSURL URLWithString:(NSString *)videoArg] : nil);
+                      if (u.isFileURL) {
+                          NSDictionary *at = [[NSFileManager defaultManager] attributesOfItemAtPath:u.path error:nil];
+                          AVURLAsset *as = [AVURLAsset URLAssetWithURL:u options:nil];
+                          LOGE([NSString stringWithFormat:@"svm-file size=%@ dur=%.3f tracks=%lu",
+                               at[NSFileSize] ?: @"?", CMTimeGetSeconds(as.duration),
+                               (unsigned long)as.tracks.count]);
+                      }
+                  } @catch (NSException *e) { LOGE(@"svm-asset ERR"); }
+                  @try {
+                      Class uc = NSClassFromString(@"WKUserInfo");
+                      if (uc && [uc respondsToSelector:@selector(shared)]) {
+                          id sh = ((id(*)(id, SEL))objc_msgSend)((id)uc, sel_registerName("shared"));
+                          if (sh && [sh respondsToSelector:@selector(loginInfo)]) {
+                              id li = ((id(*)(id, SEL))objc_msgSend)(sh, sel_registerName("loginInfo"));
+                              if (li && [li respondsToSelector:@selector(extra)]) {
+                                  id ex = ((id(*)(id, SEL))objc_msgSend)(li, sel_registerName("extra"));
+                                  LOGE([NSString stringWithFormat:@"svm-extra => %@", ex]);
+                              }
+                          }
+                      }
+                  } @catch (NSException *e) { LOGE(@"svm-extra ERR"); }
               } @catch (NSException *e) { LOGE([@"svm-ERR " stringByAppendingString:e.reason]); }
               IMP o = FindOrig(self, _cmd);
               static int s_svmDump = 0;
@@ -1441,7 +1467,7 @@ jobs:
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=msg 22-30");
+              LOGE(@"BUILD=probe 22-25");
               ComputeFVRange();
               const char *names[2] = { "__NSDictionaryM", "__NSDictionaryI" };
               for (int i = 0; i < 2; i++) {
