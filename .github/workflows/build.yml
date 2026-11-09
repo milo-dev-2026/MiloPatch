@@ -1184,7 +1184,8 @@ jobs:
               HookClassSel(@"WKConversationContextImpl", NSSelectorFromString(@"handleVideoDataWithMessageModel:row:section:"), (void *)h_g3, @"trace");
               HookClassSel(@"WKConversationContextImpl", @selector(sendMessage:), (void *)h_tr1b, @"trace");
               HookClassSel(@"WKConversationContextImpl", @selector(resendMessage:), (void *)h_tr1b, @"trace");
-              HookClassSel(@"BDOSSClient", NSSelectorFromString(@"OSSFileUpload:fromeType:dataExtensionName:coverExtensionName:data:progress:completeCallback:"), (void *)h_g7, @"trace");
+              // OSSFileUpload 的 7 参数 trampoline 一旦被真正调用就会崩 (之前发视频被跳过所以没触发), 关掉
+              // HookClassSel(@"BDOSSClient", NSSelectorFromString(@"OSSFileUpload:fromeType:dataExtensionName:coverExtensionName:data:progress:completeCallback:"), (void *)h_g7, @"trace");
               HookClassSel(@"FAImageBrowserCell", NSSelectorFromString(@"showExpiredStatus:"), (void *)h_tr1b, @"trace");
           }
 
