@@ -1137,6 +1137,51 @@ jobs:
               IMP o = FindOrig(self, _cmd);
               if (o) ((void(*)(id, SEL))o)(self, _cmd);
           }
+          // ---- FAVideoView 播放失败诊断 ----
+          static void h_fav_setasset(id self, SEL _cmd, id asset) {
+              @try {
+                  id u = nil; @try { u = [asset valueForKey:@"URL"]; } @catch (NSException *e) {}
+                  LOGE([NSString stringWithFormat:@"FAV setAsset url=%@", u]);
+              } @catch (NSException *e) {}
+              IMP o = FindOrig(self, _cmd);
+              if (o) ((void(*)(id, SEL, id))o)(self, _cmd, asset);
+          }
+          static void h_fav_status(id self, SEL _cmd) {
+              @try {
+                  id player = nil; @try { player = [self valueForKey:@"player"]; } @catch (NSException *e) {}
+                  id item = player ? [player valueForKey:@"currentItem"] : nil;
+                  id st = item ? [item valueForKey:@"status"] : nil;
+                  id err = item ? [item valueForKey:@"error"] : nil;
+                  id asset = nil; @try { asset = [self valueForKey:@"asset"]; } @catch (NSException *e) {}
+                  id u = nil; @try { u = [asset valueForKey:@"URL"]; } @catch (NSException *e) {}
+                  LOGE([NSString stringWithFormat:@"FAV statusChanged st=%@ url=%@ err=%@", st, u, err]);
+              } @catch (NSException *e) {}
+              IMP o = FindOrig(self, _cmd);
+              if (o) ((void(*)(id, SEL))o)(self, _cmd);
+          }
+          static void h_fav_showexp(id self, SEL _cmd) {
+              @try {
+                  id asset = nil; @try { asset = [self valueForKey:@"asset"]; } @catch (NSException *e) {}
+                  id u = nil; @try { u = [asset valueForKey:@"URL"]; } @catch (NSException *e) {}
+                  LOGE([NSString stringWithFormat:@"FAV showExpired url=%@", u]);
+              } @catch (NSException *e) {}
+              IMP o = FindOrig(self, _cmd);
+              if (o) ((void(*)(id, SEL))o)(self, _cmd);
+          }
+          static void h_fav_playfail(id self, SEL _cmd, BOOL failed) {
+              @try { if (failed) LOGE(@"FAV setIsPlayFailed=1"); } @catch (NSException *e) {}
+              IMP o = FindOrig(self, _cmd);
+              if (o) ((void(*)(id, SEL, BOOL))o)(self, _cmd, failed);
+          }
+          static void h_fav_prepar(id self, SEL _cmd) {
+              @try {
+                  id asset = nil; @try { asset = [self valueForKey:@"asset"]; } @catch (NSException *e) {}
+                  id u = nil; @try { u = [asset valueForKey:@"URL"]; } @catch (NSException *e) {}
+                  LOGE([NSString stringWithFormat:@"FAV preparPlay url=%@", u]);
+              } @catch (NSException *e) {}
+              IMP o = FindOrig(self, _cmd);
+              if (o) ((void(*)(id, SEL))o)(self, _cmd);
+          }
 
           static void DumpMethods(NSString *clsName) {
               Class c = objc_getClass(clsName.UTF8String);
@@ -1241,6 +1286,12 @@ jobs:
               // 视频查看修复
               HookClassSel(@"WKVideoData", @selector(loadData), (void *)h_vloaddata, @"fix");
               HookClassSel(@"WKVideoCell", @selector(yb_videoIsInvalidForData:), (void *)h_vinvalid, @"fix");
+              // FAVideoView 播放失败诊断
+              HookClassSel(@"FAVideoView", NSSelectorFromString(@"setAsset:"), (void *)h_fav_setasset, @"fix");
+              HookClassSel(@"FAVideoView", NSSelectorFromString(@"playerItemStatusChanged"), (void *)h_fav_status, @"fix");
+              HookClassSel(@"FAVideoView", NSSelectorFromString(@"showExpiredStatus"), (void *)h_fav_showexp, @"fix");
+              HookClassSel(@"FAVideoView", NSSelectorFromString(@"setIsPlayFailed:"), (void *)h_fav_playfail, @"fix");
+              HookClassSel(@"FAVideoView", NSSelectorFromString(@"preparPlay"), (void *)h_fav_prepar, @"fix");
               // 发送链路整类埋点 ← 全部禁用, 它们可能干扰原始 IMP 内部链路
               // TraceClass(@"JCVideoRecordManager");
               // TraceClass(@"JCVideoRecordView");
@@ -1717,7 +1768,7 @@ jobs:
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=maxvd6 03-10");
+              LOGE(@"BUILD=maxvd7 03-25");
               ComputeFVRange();
               const char *names[2] = { "__NSDictionaryM", "__NSDictionaryI" };
               for (int i = 0; i < 2; i++) {
