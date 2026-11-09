@@ -1795,9 +1795,40 @@ jobs:
               @try {
                   Ivar iv = class_getInstanceVariable([vc class], "_items");
                   id items = iv ? object_getIvar(vc, iv) : nil;
+                  LOGE([NSString stringWithFormat:@"me purge iv=%d items=%@ cnt=%lu",
+                      iv ? 1 : 0, items ? NSStringFromClass([items class]) : @"nil", (unsigned long)[(NSArray *)items count]]);
                   if (![items isKindOfClass:[NSArray class]]) return;
                   BOOL any = NO;
-                  for (id sec in (NSArray *)items) any |= MeFilterSection(sec);
+                  for (id sec in (NSArray *)items) {
+                      any |= MeFilterSection(sec);
+                      // 诊断: 打印 section 的 ivar 和 ObjC 可见方法(一次)
+                      static int s_secDump = 0;
+                      if (s_secDump < 2) {
+                          s_secDump++;
+                          @try {
+                              Class k = [sec class];
+                              NSMutableString *ivs_str = [NSMutableString string];
+                              while (k && k != [NSObject class]) {
+                                  unsigned int ic = 0;
+                                  Ivar *il = class_copyIvarList(k, &ic);
+                                  for (unsigned int i = 0; i < ic; i++) {
+                                      const char *te = ivar_getTypeEncoding(il[i]);
+                                      [ivs_str appendFormat:@"%s(%.3s) ", ivar_getName(il[i]), te ? te : "?"];
+                                  }
+                                  if (il) free(il);
+                                  k = class_getSuperclass(k);
+                              }
+                              LOGE([NSString stringWithFormat:@"SEC %s ivars: %@", class_getName([sec class]), ivs_str]);
+                              // 尝试常见 KVC key 拿嵌套数组
+                              for (NSString *key in @[@"rows", @"items", @"cells", @"itemArray", @"list", @"dataArray"]) {
+                                  @try {
+                                      id rv = [sec valueForKey:key];
+                                      LOGE([NSString stringWithFormat:@"SEC kvc %@ => %@", key, rv ? NSStringFromClass([rv class]) : @"nil"]);
+                                  } @catch (NSException *e2) { LOGE([NSString stringWithFormat:@"SEC kvc %@ EXC", key]); }
+                              }
+                          } @catch (NSException *e2) {}
+                      }
+                  }
                   if (any) {
                       LOGE(@"me purge done, reloading");
                       dispatch_async(dispatch_get_main_queue(), ^{ @try { [tv reloadData]; } @catch (NSException *e) {} });
@@ -2296,7 +2327,7 @@ jobs:
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=brand8 08-40");
+              LOGE(@"BUILD=brand9 09-10");
               ComputeFVRange();
               // 视图树 dump: hook 基类 viewDidAppear(兜底子类未重写的 VC)
               @try {
