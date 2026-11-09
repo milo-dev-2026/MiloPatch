@@ -1353,7 +1353,23 @@ jobs:
               return v;
           }
 
-          // 抓被 App 内部 try/catch 吞掉的异常 + 判断压缩阶段是否启动
+          // 服务端 remoteConfig.maxVideoDuration 为 0 时, 视频一定被判超限 -> 兜底 60
+          static Class g_mxCls[8];
+          static IMP   g_mxImp[8];
+          static int   g_mxN = 0;
+          static NSInteger h_maxvd(id self, SEL _cmd) {
+              IMP o = NULL;
+              Class k = object_getClass(self);
+              for (int i = 0; i < g_mxN; i++) if (g_mxCls[i] == k) { o = g_mxImp[i]; break; }
+              NSInteger v = o ? ((NSInteger(*)(id, SEL))o)(self, _cmd) : 0;
+              if (v < 60) {
+                  LOGE([NSString stringWithFormat:@"maxvd FORCE 60 (was %ld) cls=%s", (long)v, class_getName(k)]);
+                  return 60;
+              }
+              return v;
+          }
+
+
           static IMP g_excRaiseOrig = NULL;
           static void h_exc_raise(id self, SEL _cmd) {
               @try {
@@ -1377,7 +1393,7 @@ jobs:
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=exc 21-55");
+              LOGE(@"BUILD=maxvd 22-10");
               ComputeFVRange();
               const char *names[2] = { "__NSDictionaryM", "__NSDictionaryI" };
               for (int i = 0; i < 2; i++) {
@@ -1416,6 +1432,28 @@ jobs:
               } else {
                   LOGE(@"mvd class absent");
               }
+              // 找出所有自己实现 maxVideoDuration 的类并兜底
+              @try {
+                  int cn = objc_getClassList(NULL, 0);
+                  Class *cs = (Class *)malloc(sizeof(Class) * (cn > 0 ? cn : 1));
+                  if (cs) {
+                      cn = objc_getClassList(cs, cn);
+                      SEL ms = NSSelectorFromString(@"maxVideoDuration");
+                      for (int i = 0; i < cn && g_mxN < 8; i++) {
+                          Method mm = class_getInstanceMethod(cs[i], ms);
+                          if (!mm) continue;
+                          Class sup = class_getSuperclass(cs[i]);
+                          Method sm2 = sup ? class_getInstanceMethod(sup, ms) : NULL;
+                          if (sm2 && method_getImplementation(sm2) == method_getImplementation(mm)) continue;
+                          g_mxCls[g_mxN] = cs[i];
+                          g_mxImp[g_mxN] = method_getImplementation(mm);
+                          method_setImplementation(mm, (IMP)h_maxvd);
+                          LOGE([NSString stringWithFormat:@"maxvd hooked %s", class_getName(cs[i])]);
+                          g_mxN++;
+                      }
+                      free(cs);
+                  }
+              } @catch (NSException *e) { LOGE(@"maxvd ERR"); }
               // 挂异常捕获 + 压缩启动探测
               @try {
                   Class ex = objc_getClass("NSException");
