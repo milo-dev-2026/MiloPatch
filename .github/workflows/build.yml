@@ -1732,59 +1732,74 @@ jobs:
                   }
               } @catch (NSException *e) {}
           }
-          // 我的页面数据源删除: 从数据数组里直接移除被屏蔽入口(不留空白行)
-          static NSString *MeItemTitle(id item) {
-              if ([item isKindOfClass:[NSString class]]) return item;
-              if ([item isKindOfClass:[NSDictionary class]]) {
-                  for (id v in [(NSDictionary *)item allValues]) {
-                      if ([v isKindOfClass:[NSString class]] && MeEntryBlocked(v)) return v;
-                  }
-                  return nil;
-              }
-              for (NSString *k in @[@"title", @"name", @"titleStr", @"text", @"menuName", @"itemName", @"titleString"]) {
-                  @try {
-                      id v = [item valueForKey:k];
-                      if ([v isKindOfClass:[NSString class]] && [(NSString *)v length]) return v;
-                  } @catch (NSException *e) {}
-              }
-              return nil;
-          }
-          static NSArray *MeFilterArray(NSArray *src, BOOL *changed) {
-              NSMutableArray *out = [NSMutableArray arrayWithCapacity:src.count];
-              for (id item in src) {
-                  if ([item isKindOfClass:[NSArray class]]) {
-                      [out addObject:MeFilterArray(item, changed)];
-                      continue;
-                  }
-                  NSString *t = MeItemTitle(item);
-                  if (t && MeEntryBlocked(t)) { *changed = YES; LOGE([NSString stringWithFormat:@"me purge rm \"%@\"", t]); continue; }
-                  [out addObject:item];
-              }
-              return out;
-          }
-          static int s_purged = 0;
-          static void MePurgeData(id vc, id tv) {
-              if (s_purged) return;
+          // 我的页面数据源删除: 结构 _items -> [WKFormSection] -> 嵌套 rows 数组 -> item(title 等属性)
+          // 拼接对象的全部字符串属性值(标题必在其中)
+          static NSString *MeAllStringProps(id it) {
+              NSMutableString *acc = [NSMutableString string];
               @try {
-                  Class k = [vc class];
-                  BOOL any = NO;
+                  Class k = [it class];
+                  while (k && k != [NSObject class]) {
+                      unsigned int pc = 0;
+                      objc_property_t *ps = class_copyPropertyList(k, &pc);
+                      for (unsigned int j = 0; j < pc; j++) {
+                          NSString *pn = [NSString stringWithUTF8String:property_getName(ps[j])];
+                          @try {
+                              id pv = [it valueForKey:pn];
+                              if ([pv isKindOfClass:[NSString class]]) [acc appendFormat:@"|%@", pv];
+                          } @catch (NSException *e2) {}
+                      }
+                      if (ps) free(ps);
+                      k = class_getSuperclass(k);
+                  }
+              } @catch (NSException *e) {}
+              return acc;
+          }
+          // 过滤 section 的嵌套数组, 删除标题被屏蔽的 item, 返回是否有变化
+          static BOOL MeFilterSection(id sec) {
+              BOOL any = NO;
+              @try {
+                  Class k = [sec class];
                   while (k && k != [NSObject class]) {
                       unsigned int ic = 0;
                       Ivar *ivs = class_copyIvarList(k, &ic);
                       for (unsigned int i = 0; i < ic; i++) {
                           const char *te = ivar_getTypeEncoding(ivs[i]);
                           if (!te || te[0] != '@') continue;
-                          id val = object_getIvar(vc, ivs[i]);
+                          id val = object_getIvar(sec, ivs[i]);
                           if (![val isKindOfClass:[NSArray class]]) continue;
+                          if ([(NSArray *)val count] == 0 || [(NSArray *)val count] > 60) continue;
+                          NSMutableArray *keep = [NSMutableArray arrayWithCapacity:[(NSArray *)val count]];
                           BOOL chg = NO;
-                          NSArray *filtered = MeFilterArray(val, &chg);
-                          if (chg) { object_setIvar(vc, ivs[i], filtered); any = YES; LOGE([NSString stringWithFormat:@"me purge ivar %s", ivar_getName(ivs[i])]); }
+                          for (id it in (NSArray *)val) {
+                              NSString *sp = MeAllStringProps(it);
+                              BOOL blocked = NO;
+                              for (NSString *b in @[@"分享邀请", @"网页登录", @"会员中心", @"道具商城", @"我的道具", @"余额", @"UCoin"]) {
+                                  if ([sp containsString:b]) { blocked = YES; break; }
+                              }
+                              if (blocked) { chg = YES; LOGE([NSString stringWithFormat:@"me purge rm %@", sp]); continue; }
+                              [keep addObject:it];
+                          }
+                          if (chg) {
+                              if ([val isKindOfClass:[NSMutableArray class]]) [(NSMutableArray *)val setArray:keep];
+                              else object_setIvar(sec, ivs[i], keep);
+                              any = YES;
+                          }
                       }
                       if (ivs) free(ivs);
                       k = class_getSuperclass(k);
                   }
+              } @catch (NSException *e) {}
+              return any;
+          }
+          static void MePurgeData(id vc, id tv) {
+              @try {
+                  Ivar iv = class_getInstanceVariable([vc class], "_items");
+                  id items = iv ? object_getIvar(vc, iv) : nil;
+                  if (![items isKindOfClass:[NSArray class]]) return;
+                  BOOL any = NO;
+                  for (id sec in (NSArray *)items) any |= MeFilterSection(sec);
                   if (any) {
-                      s_purged = 1;
+                      LOGE(@"me purge done, reloading");
                       dispatch_async(dispatch_get_main_queue(), ^{ @try { [tv reloadData]; } @catch (NSException *e) {} });
                   }
               } @catch (NSException *e) {}
@@ -2281,7 +2296,7 @@ jobs:
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=brand7 08-10");
+              LOGE(@"BUILD=brand8 08-40");
               ComputeFVRange();
               // 视图树 dump: hook 基类 viewDidAppear(兜底子类未重写的 VC)
               @try {
@@ -2611,8 +2626,8 @@ jobs:
               dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
                   ProbeInit();
               });
-              // 3秒后只做只读的范围探测 + 配置键追踪 (不写代码页, 不会被签名校验杀)
-              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)3 * NSEC_PER_SEC), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+              // 0.8秒后执行 hook 安装: dyld 锁已释放(constructor 立即返回), 赶在登录页显示前装好, 消灭闪现
+              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
                   InstallFVCfgTrace();
               });
               dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)4 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
