@@ -1187,6 +1187,10 @@ jobs:
               // OSSFileUpload 的 7 参数 trampoline 一旦被真正调用就会崩 (之前发视频被跳过所以没触发), 关掉
               // HookClassSel(@"BDOSSClient", NSSelectorFromString(@"OSSFileUpload:fromeType:dataExtensionName:coverExtensionName:data:progress:completeCallback:"), (void *)h_g7, @"trace");
               HookClassSel(@"FAImageBrowserCell", NSSelectorFromString(@"showExpiredStatus:"), (void *)h_tr1b, @"trace");
+              // 相机确认后的保存/发送节点埋点: 用来确认崩溃发生在哪一步之前
+              HookClassSel(@"JCVideoRecordView", @selector(saveVideo), (void *)h_g0, @"trace");
+              HookClassSel(@"JCVideoRecordView", @selector(sendVieoMsg), (void *)h_g0, @"trace");
+              HookClassSel(@"JCVideoRecordView", NSSelectorFromString(@"video:didFinishSavingWithError:contextInfo:"), (void *)h_g3, @"trace");
           }
 
           static void HookYBBrowser(void) {
