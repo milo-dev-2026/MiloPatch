@@ -31,8 +31,6 @@ jobs:
           #include <string.h>
           #include <stdint.h>
           #include <stddef.h>
-          // signal.h 会被 mach-o 头文件间接污染, 手动声明
-          extern void *signal(int, void (*)(int));
 
           static NSArray *BlockTitles(void) {
               static NSArray *a;
