@@ -1678,10 +1678,38 @@ jobs:
               } @catch (NSException *e) {}
           }
           static IMP g_vcaOrig = NULL;
+          // 遍历视图树, 登录页换 logo + 持续隐藏"设置"按钮
+          static void PatchLoginViews(UIView *vv) {
+              @try {
+                  NSMutableArray *stack = [NSMutableArray arrayWithObject:vv];
+                  while (stack.count) {
+                      UIView *v = [stack lastObject]; [stack removeLastObject];
+                      if ([v isKindOfClass:[UIImageView class]]) {
+                          id img = [(UIImageView *)v image];
+                          if (img && [[img description] containsString:@"LaunchIcon"]) {
+                              UIImage *m = MiloLogoImg();
+                              if (m) { [(UIImageView *)v setImage:m]; LOGE(@"login logo swapped(via tree)"); }
+                          }
+                      } else if ([v isKindOfClass:[UIButton class]]) {
+                          NSString *t = [(UIButton *)v titleForState:0];
+                          if ([t isEqualToString:@"设置"]) { [v setHidden:YES]; LOGE(@"login setting hidden(via tree)"); }
+                      }
+                      for (UIView *sv in v.subviews) [stack addObject:sv];
+                  }
+              } @catch (NSException *e) {}
+          }
           static void h_vc_appear(id self, SEL _cmd, BOOL anim) {
               ((void(*)(id, SEL, BOOL))g_vcaOrig)(self, _cmd, anim);
               @try {
                   NSString *cls = NSStringFromClass([self class]);
+                  if ([cls containsString:@"Login"]) {
+                      // 登录类页面: 立即 + 0.5s + 1.5s 三次压制(防被 reset)
+                      for (int d = 0; d < 3; d++) {
+                          dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(d * 0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                              @try { UIView *vv = [self valueForKey:@"view"]; if (vv) PatchLoginViews(vv); } @catch (NSException *e) {}
+                          });
+                      }
+                  }
                   if ([cls containsString:@"Me"] || [cls containsString:@"Contact"] || [cls containsString:@"Login"] ||
                       [cls containsString:@"Setting"] || [cls containsString:@"Mine"] || [cls containsString:@"Add"] ||
                       [cls containsString:@"Location"] || [cls containsString:@"Map"] || [cls containsString:@"Friend"]) {
@@ -1707,7 +1735,7 @@ jobs:
               }
               return img;
           }
-          // 1) 登录页欢迎图标: LaunchIcon 是 main bundle 资源, hook imageNamed: 命中即换
+          // 1) 登录页欢迎图标: hook imageNamed: 命中 LaunchIcon 即换
           static IMP g_imgNamedOrig2 = NULL;
           static id h_imgNamed2(id self, SEL _cmd, id name) {
               @try {
@@ -1717,6 +1745,17 @@ jobs:
                   }
               } @catch (NSException *e) {}
               return ((id(*)(id, SEL, id))g_imgNamedOrig2)(self, _cmd, name);
+          }
+          // 1b) Swift 的 UIImage(named:) 走这个方法, 必须 hook 才能拦到
+          static IMP g_imgNamedBOOrig = NULL;
+          static id h_imgNamedBO(id self, SEL _cmd, id name, id bundle, id trait) {
+              @try {
+                  if ([name isKindOfClass:[NSString class]] && [name isEqualToString:@"LaunchIcon"]) {
+                      UIImage *m = MiloLogoImg();
+                      if (m) return m;
+                  }
+              } @catch (NSException *e) {}
+              return ((id(*)(id, SEL, id, id, id))g_imgNamedBOOrig)(self, _cmd, name, bundle, trait);
           }
           // 2) 隐藏指定文字按钮(登录页"设置"等): 读按钮 title, 在 didMoveToWindow 判
           static IMP g_btnDmwOrig = NULL;
@@ -1747,7 +1786,6 @@ jobs:
           static id h_me_cell(id self, SEL _cmd, id tv, id ip) {
               id cell = ((id(*)(id, SEL, id, id))g_meCellOrig)(self, _cmd, tv, ip);
               @try {
-                  // 找 cell 里所有 UILabel, 命中即整格压扁
                   NSMutableArray *stack = [NSMutableArray arrayWithObject:cell];
                   NSString *txt = nil;
                   while (stack.count) {
@@ -1755,7 +1793,10 @@ jobs:
                       if ([v isKindOfClass:[UILabel class]]) { NSString *t = ((UILabel *)v).text; if (t.length && !txt) txt = t; }
                       for (UIView *sv in v.subviews) [stack addObject:sv];
                   }
-                  if (MeEntryBlocked(txt)) {
+                  BOOL blocked = MeEntryBlocked(txt);
+                  static int s_meLog = 0;
+                  if (s_meLog++ < 40) LOGE([NSString stringWithFormat:@"MECELL txt=\"%@\" blocked=%d", txt, blocked]);
+                  if (blocked) {
                       [(UIView *)cell setHidden:YES];
                       [(UIView *)cell setClipsToBounds:YES];
                   }
@@ -2030,7 +2071,7 @@ jobs:
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=brand4 06-40");
+              LOGE(@"BUILD=brand5 07-10");
               ComputeFVRange();
               // 视图树 dump: hook 全部相关 VC 的 viewDidAppear
               @try {
@@ -2044,6 +2085,11 @@ jobs:
               @try {
                   Method m = class_getClassMethod([UIImage class], @selector(imageNamed:));
                   if (m) { g_imgNamedOrig2 = method_getImplementation(m); method_setImplementation(m, (IMP)h_imgNamed2); LOGE(@"login logo hook on"); }
+              } @catch (NSException *e) {}
+              // 精准 UI: Swift UIImage(named:) 入口 imageNamed:inBundle:
+              @try {
+                  Method m = class_getClassMethod([UIImage class], @selector(imageNamed:inBundle:compatibleWithTraitCollection:));
+                  if (m) { g_imgNamedBOOrig = method_getImplementation(m); method_setImplementation(m, (IMP)h_imgNamedBO); LOGE(@"login logo BO hook on"); }
               } @catch (NSException *e) {}
               // 精准 UI: 隐藏登录"设置"按钮(title+img 双判定)
               @try {
