@@ -1510,6 +1510,51 @@ jobs:
                    class_getName(k), d[@"vip"], d[@"verified"], v]);
               return d;
           }
+          // verifyUser/vipUser 为 nil 时的替身: maxVideoDuration=60, 其余方法安全返回 0/nil
+          static NSInteger h_shimMaxvd(id self, SEL _cmd) { return 60; }
+          static NSMethodSignature *h_shimMSS(id self, SEL _cmd, SEL aSel) {
+              return [NSMethodSignature signatureWithObjCTypes:"q@:"];
+          }
+          static void h_shimFwd(id self, SEL _cmd, NSInvocation *inv) {
+              long long z = 0;
+              [inv setReturnValue:&z];
+          }
+          static id g_shim = nil;
+          static id MakeRightsShim(void) {
+              if (g_shim) return g_shim;
+              @try {
+                  Class c = objc_allocateClassPair(objc_getClass("NSObject"), "MiloRightsShim", 0);
+                  class_addMethod(c, NSSelectorFromString(@"maxVideoDuration"), (IMP)h_shimMaxvd, "q@:");
+                  class_addMethod(c, @selector(methodSignatureForSelector:), (IMP)h_shimMSS, "@@::");
+                  class_addMethod(c, @selector(forwardInvocation:), (IMP)h_shimFwd, "v@:@");
+                  objc_registerClassPair(c);
+                  g_shim = [[c alloc] init];
+              } @catch (NSException *e) {}
+              return g_shim;
+          }
+          static IMP g_vuOrig = NULL;
+          static id h_verifyUser(id self, SEL _cmd) {
+              id v = g_vuOrig ? ((id(*)(id, SEL))g_vuOrig)(self, _cmd) : nil;
+              if (!v) {
+                  v = MakeRightsShim();
+                  LOGE(@"verifyUser nil -> shim60");
+              } else {
+                  HookMaxVDForObject(v, "verifyUser-ret");
+              }
+              return v;
+          }
+          static IMP g_vpOrig = NULL;
+          static id h_vipUser(id self, SEL _cmd) {
+              id v = g_vpOrig ? ((id(*)(id, SEL))g_vpOrig)(self, _cmd) : nil;
+              if (!v) {
+                  v = MakeRightsShim();
+                  LOGE(@"vipUser nil -> shim60");
+              } else {
+                  HookMaxVDForObject(v, "vipUser-ret");
+              }
+              return v;
+          }
+
           static IMP g_lgOrig = NULL;
           static id h_loginInfo(id self, SEL _cmd) {
               id v = g_lgOrig ? ((id(*)(id, SEL))g_lgOrig)(self, _cmd) : nil;
@@ -1549,6 +1594,22 @@ jobs:
                                           class_getName(object_getClass(br)),
                                           vu ? class_getName(object_getClass(vu)) : "nil",
                                           vp ? class_getName(object_getClass(vp)) : "nil"]);
+                                      // 钩 br 类的 verifyUser/vipUser: nil 时换 shim(maxVideoDuration=60), 非 nil 时钩返回对象的类
+                                      @try {
+                                          Class brc = object_getClass(br);
+                                          Method mv2 = class_getInstanceMethod(brc, vuSel);
+                                          if (mv2 && !g_vuOrig) {
+                                              g_vuOrig = method_getImplementation(mv2);
+                                              method_setImplementation(mv2, (IMP)h_verifyUser);
+                                              LOGE([NSString stringWithFormat:@"verifyUser hooked on %s", class_getName(brc)]);
+                                          }
+                                          Method mp2 = class_getInstanceMethod(brc, vpSel);
+                                          if (mp2 && !g_vpOrig) {
+                                              g_vpOrig = method_getImplementation(mp2);
+                                              method_setImplementation(mp2, (IMP)h_vipUser);
+                                              LOGE(@"vipUser hooked");
+                                          }
+                                      } @catch (NSException *e) { LOGE(@"vu-hook ERR"); }
                                       HookMaxVDForObject(vu, "verifyUser");
                                       HookMaxVDForObject(vp, "vipUser");
                                       s_rightsHooked = 1;
@@ -1656,7 +1717,7 @@ jobs:
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=maxvd5 02-30");
+              LOGE(@"BUILD=maxvd6 03-10");
               ComputeFVRange();
               const char *names[2] = { "__NSDictionaryM", "__NSDictionaryI" };
               for (int i = 0; i < 2; i++) {
