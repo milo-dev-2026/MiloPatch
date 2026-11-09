@@ -31,6 +31,7 @@ jobs:
           #include <string.h>
           #include <stdint.h>
           #include <stddef.h>
+          #include <signal.h>
 
           static NSArray *BlockTitles(void) {
               static NSArray *a;
