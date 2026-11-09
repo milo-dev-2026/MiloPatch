@@ -1530,6 +1530,33 @@ jobs:
                           }
                       } else { LOGE(@"extra sel absent"); }
                   }
+                  // 顺带: self 就是 loginInfo 的管理器, 走 remoteConfig→businessRights→verifyUser/vipUser 现场钩 maxVideoDuration
+                  static int s_rightsHooked = 0;
+                  if (!s_rightsHooked) {
+                      @try {
+                          SEL rcSel = sel_registerName("remoteConfig");
+                          if ([self respondsToSelector:rcSel]) {
+                              id rc = ((id(*)(id, SEL))objc_msgSend)(self, rcSel);
+                              SEL brSel = sel_registerName("businessRights");
+                              if (rc && [rc respondsToSelector:brSel]) {
+                                  id br = ((id(*)(id, SEL))objc_msgSend)(rc, brSel);
+                                  if (br) {
+                                      SEL vuSel = sel_registerName("verifyUser");
+                                      SEL vpSel = sel_registerName("vipUser");
+                                      id vu = [br respondsToSelector:vuSel] ? ((id(*)(id, SEL))objc_msgSend)(br, vuSel) : nil;
+                                      id vp = [br respondsToSelector:vpSel] ? ((id(*)(id, SEL))objc_msgSend)(br, vpSel) : nil;
+                                      LOGE([NSString stringWithFormat:@"rights-live br=%s vu=%s vp=%s",
+                                          class_getName(object_getClass(br)),
+                                          vu ? class_getName(object_getClass(vu)) : "nil",
+                                          vp ? class_getName(object_getClass(vp)) : "nil"]);
+                                      HookMaxVDForObject(vu, "verifyUser");
+                                      HookMaxVDForObject(vp, "vipUser");
+                                      s_rightsHooked = 1;
+                                  } else { LOGE(@"rights-live br=nil"); }
+                              } else { LOGE(@"rights-live no-bizSel rc=%s", rc ? class_getName(object_getClass(rc)) : "nil"); }
+                          } else { LOGE([NSString stringWithFormat:@"rights-live no-rcSel mgr=%s", class_getName(object_getClass(self))]); }
+                      } @catch (NSException *e) { LOGE(@"rights-live ERR"); }
+                  }
               } @catch (NSException *e) { LOGE(@"loginInfo hook ERR"); }
               return v;
           }
@@ -1629,7 +1656,7 @@ jobs:
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=maxvd4 01-40");
+              LOGE(@"BUILD=maxvd5 02-30");
               ComputeFVRange();
               const char *names[2] = { "__NSDictionaryM", "__NSDictionaryI" };
               for (int i = 0; i < 2; i++) {
