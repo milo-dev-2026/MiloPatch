@@ -1352,8 +1352,7 @@ jobs:
                   // 兜底: 视频时长上限为 0/nil 时强制 60
                   if ([key isKindOfClass:[NSString class]]) {
                       NSString *low = [(NSString *)key lowercaseString];
-                      if (([low containsString:@"duration"] || [low containsString:@"second"]) &&
-                          [low containsString:@"max"]) {
+                      if ([low containsString:@"maxvideoduration"]) {
                           NSInteger iv = [v respondsToSelector:@selector(integerValue)] ? [v integerValue] : 0;
                           if (iv <= 0) {
                               LOGE([NSString stringWithFormat:@"DUR-FORCE 60 key=%@ (was %@)", key, v]);
@@ -1375,8 +1374,7 @@ jobs:
               @try {
                   if ([key isKindOfClass:[NSString class]]) {
                       NSString *low = [(NSString *)key lowercaseString];
-                      if (([low containsString:@"duration"] || [low containsString:@"second"]) &&
-                          [low containsString:@"max"]) {
+                      if ([low containsString:@"maxvideoduration"]) {
                           NSInteger iv = [v respondsToSelector:@selector(integerValue)] ? [v integerValue] : 0;
                           if (iv <= 0) {
                               LOGE([NSString stringWithFormat:@"DUR-FORCE 60 key=%@ (was %@)", key, v]);
@@ -1385,6 +1383,30 @@ jobs:
                       }
                   }
               } @catch (NSException *e) {}
+              return v;
+          }
+
+          // 精准兜底: 任何返回 float/double 的 maxVideoDuration getter, 0 时强制 60
+          static Class g_dC[8]; static IMP g_dI[8]; static int g_dN = 0;
+          static double h_maxvd_d(id self, SEL _cmd) {
+              IMP o = NULL; Class k = object_getClass(self);
+              for (int i = 0; i < g_dN; i++) if (g_dC[i] == k) { o = g_dI[i]; break; }
+              double v = o ? ((double(*)(id, SEL))o)(self, _cmd) : 0.0;
+              if (v <= 0.0) {
+                  LOGE([NSString stringWithFormat:@"maxvd FORCE 60.0 (was %.3f) cls=%s", v, class_getName(k)]);
+                  return 60.0;
+              }
+              return v;
+          }
+          static Class g_fC[8]; static IMP g_fI[8]; static int g_fN = 0;
+          static float h_maxvd_f(id self, SEL _cmd) {
+              IMP o = NULL; Class k = object_getClass(self);
+              for (int i = 0; i < g_fN; i++) if (g_fC[i] == k) { o = g_fI[i]; break; }
+              float v = o ? ((float(*)(id, SEL))o)(self, _cmd) : 0.0f;
+              if (v <= 0.0f) {
+                  LOGE([NSString stringWithFormat:@"maxvd FORCE 60.0f (was %.3f) cls=%s", v, class_getName(k)]);
+                  return 60.0f;
+              }
               return v;
           }
 
@@ -1398,17 +1420,6 @@ jobs:
                           [low containsString:@"second"] || [low containsString:@"record"] || [low containsString:@"max"]) {
                           g_cfgLog++;
                           LOGE([NSString stringWithFormat:@"udcfg key=%@ val=%@", key, v]);
-                      }
-                  }
-                  if ([key isKindOfClass:[NSString class]]) {
-                      NSString *low = [(NSString *)key lowercaseString];
-                      if (([low containsString:@"duration"] || [low containsString:@"second"]) &&
-                          [low containsString:@"max"]) {
-                          NSInteger iv = [v respondsToSelector:@selector(integerValue)] ? [v integerValue] : 0;
-                          if (iv <= 0) {
-                              LOGE([NSString stringWithFormat:@"DUR-FORCE 60 key=%@ (was %@)", key, v]);
-                              return @60;
-                          }
                       }
                   }
               } @catch (NSException *e) {}
@@ -1557,7 +1568,7 @@ jobs:
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=stk 23-40");
+              LOGE(@"BUILD=maxvd2 01-20");
               ComputeFVRange();
               const char *names[2] = { "__NSDictionaryM", "__NSDictionaryI" };
               for (int i = 0; i < 2; i++) {
@@ -1602,24 +1613,42 @@ jobs:
               } else {
                   LOGE(@"mvd class absent");
               }
-              // 找出所有自己实现 maxVideoDuration 的类并兜底
+              // 按返回类型精准 hook maxVideoDuration (float / double 版), 只看 App 自己镜像的类
               @try {
                   int cn = objc_getClassList(NULL, 0);
                   Class *cs = (Class *)malloc(sizeof(Class) * (cn > 0 ? cn : 1));
                   if (cs) {
                       cn = objc_getClassList(cs, cn);
                       SEL ms = NSSelectorFromString(@"maxVideoDuration");
-                      for (int i = 0; i < cn && g_mxN < 8; i++) {
+                      for (int i = 0; i < cn; i++) {
                           Method mm = class_getInstanceMethod(cs[i], ms);
                           if (!mm) continue;
                           Class sup = class_getSuperclass(cs[i]);
                           Method sm2 = sup ? class_getInstanceMethod(sup, ms) : NULL;
                           if (sm2 && method_getImplementation(sm2) == method_getImplementation(mm)) continue;
-                          g_mxCls[g_mxN] = cs[i];
-                          g_mxImp[g_mxN] = method_getImplementation(mm);
-                          method_setImplementation(mm, (IMP)h_maxvd);
-                          LOGE([NSString stringWithFormat:@"maxvd hooked %s", class_getName(cs[i])]);
-                          g_mxN++;
+                          const char *img = class_getImageName(cs[i]);
+                          if (!img || !(strstr(img, "FayChat") || strstr(img, "Milo.app") || strstr(img, "FALiteVideo") || strstr(img, "FAMainModule") || strstr(img, "ZLPhoto"))) continue;
+                          const char *te = method_getTypeEncoding(mm);
+                          const char *nm = class_getName(cs[i]);
+                          if (te && te[0] == 'd' && g_dN < 8) {
+                              g_dC[g_dN] = cs[i]; g_dI[g_dN] = method_getImplementation(mm);
+                              method_setImplementation(mm, (IMP)h_maxvd_d);
+                              LOGE([NSString stringWithFormat:@"maxvd(d) hooked %s", nm]);
+                              g_dN++;
+                          } else if (te && te[0] == 'f' && g_fN < 8) {
+                              g_fC[g_fN] = cs[i]; g_fI[g_fN] = method_getImplementation(mm);
+                              method_setImplementation(mm, (IMP)h_maxvd_f);
+                              LOGE([NSString stringWithFormat:@"maxvd(f) hooked %s", nm]);
+                              g_fN++;
+                          } else if (te && (te[0] == 'q' || te[0] == 'i') && g_mxN < 8) {
+                              g_mxCls[g_mxN] = cs[i];
+                              g_mxImp[g_mxN] = method_getImplementation(mm);
+                              method_setImplementation(mm, (IMP)h_maxvd);
+                              LOGE([NSString stringWithFormat:@"maxvd(i) hooked %s", nm]);
+                              g_mxN++;
+                          } else {
+                              LOGE([NSString stringWithFormat:@"maxvd skip %s type=%s", nm, te ? te : "?"]);
+                          }
                       }
                       free(cs);
                   }
