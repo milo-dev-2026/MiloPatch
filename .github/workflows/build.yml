@@ -1349,6 +1349,41 @@ jobs:
                           LOGE([NSString stringWithFormat:@"allcfg key=%@ val=%@ caller=%p", ks, v, (void *)ra]);
                       }
                   }
+                  // 兜底: 视频时长上限为 0/nil 时强制 60
+                  if ([key isKindOfClass:[NSString class]]) {
+                      NSString *low = [(NSString *)key lowercaseString];
+                      if (([low containsString:@"duration"] || [low containsString:@"second"]) &&
+                          [low containsString:@"max"]) {
+                          NSInteger iv = [v respondsToSelector:@selector(integerValue)] ? [v integerValue] : 0;
+                          if (iv <= 0) {
+                              LOGE([NSString stringWithFormat:@"DUR-FORCE 60 key=%@ (was %@)", key, v]);
+                              return @60;
+                          }
+                      }
+                  }
+              } @catch (NSException *e) {}
+              return v;
+          }
+
+          static IMP g_ofkOrig[2];
+          static id h_objectForKey(id self, SEL _cmd, id key) {
+              int idx = -1;
+              Class k = object_getClass(self);
+              for (int i = 0; i < g_dn; i++) if (g_dcls[i] == k) { idx = i; break; }
+              if (idx < 0) return nil;
+              id v = ((id(*)(id, SEL, id))g_ofkOrig[idx])(self, _cmd, key);
+              @try {
+                  if ([key isKindOfClass:[NSString class]]) {
+                      NSString *low = [(NSString *)key lowercaseString];
+                      if (([low containsString:@"duration"] || [low containsString:@"second"]) &&
+                          [low containsString:@"max"]) {
+                          NSInteger iv = [v respondsToSelector:@selector(integerValue)] ? [v integerValue] : 0;
+                          if (iv <= 0) {
+                              LOGE([NSString stringWithFormat:@"DUR-FORCE 60 key=%@ (was %@)", key, v]);
+                              return @60;
+                          }
+                      }
+                  }
               } @catch (NSException *e) {}
               return v;
           }
@@ -1363,6 +1398,17 @@ jobs:
                           [low containsString:@"second"] || [low containsString:@"record"] || [low containsString:@"max"]) {
                           g_cfgLog++;
                           LOGE([NSString stringWithFormat:@"udcfg key=%@ val=%@", key, v]);
+                      }
+                  }
+                  if ([key isKindOfClass:[NSString class]]) {
+                      NSString *low = [(NSString *)key lowercaseString];
+                      if (([low containsString:@"duration"] || [low containsString:@"second"]) &&
+                          [low containsString:@"max"]) {
+                          NSInteger iv = [v respondsToSelector:@selector(integerValue)] ? [v integerValue] : 0;
+                          if (iv <= 0) {
+                              LOGE([NSString stringWithFormat:@"DUR-FORCE 60 key=%@ (was %@)", key, v]);
+                              return @60;
+                          }
                       }
                   }
               } @catch (NSException *e) {}
@@ -1387,6 +1433,12 @@ jobs:
                   NSString *s = [arg isKindOfClass:[NSString class]] ? (NSString *)arg : [arg description];
                   LOGE([NSString stringWithFormat:@"TOAST %s => %@", class_getName(object_getClass(self)),
                        s.length > 200 ? [s substringToIndex:200] : s]);
+                  if ([s containsString:@"0s"] || [s containsString:@"大于"]) {
+                      NSArray *st = [NSThread callStackSymbols];
+                      for (int i = 0; i < (st.count < 12 ? st.count : 12); i++) {
+                          LOGE([NSString stringWithFormat:@"TOAST-ST %@", st[i]]);
+                      }
+                  }
               } @catch (NSException *e) {}
               IMP o = NULL; Class k = object_getClass(self);
               for (int i = 0; i < g_m1N; i++) if (g_m1Cls[i] == k) { o = g_m1Imp[i]; break; }
@@ -1505,7 +1557,7 @@ jobs:
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=extra3 23-15");
+              LOGE(@"BUILD=stk 23-40");
               ComputeFVRange();
               const char *names[2] = { "__NSDictionaryM", "__NSDictionaryI" };
               for (int i = 0; i < 2; i++) {
@@ -1519,6 +1571,12 @@ jobs:
                   method_setImplementation(m, (IMP)h_subscript);
                   g_dn++;
                   LOGE([NSString stringWithFormat:@"fvtrace hook %s", names[i]]);
+                  // 同时 hook objectForKey: (很多配置用这个取)
+                  Method m2 = class_getInstanceMethod(cls, @selector(objectForKey:));
+                  if (m2) {
+                      g_ofkOrig[g_dn-1] = method_getImplementation(m2);
+                      method_setImplementation(m2, (IMP)h_objectForKey);
+                  }
               }
               Class ud = objc_getClass("NSUserDefaults");
               if (ud) {
