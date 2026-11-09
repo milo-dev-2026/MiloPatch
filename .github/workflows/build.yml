@@ -1138,8 +1138,7 @@ jobs:
           static void HookVideoAndSend(void) {
               if (!g_origMap) g_origMap = [NSMutableDictionary dictionary];
               if (!g_descMap) g_descMap = [NSMutableDictionary dictionary];
-              TraceCameraClasses();
-              // 精准 hook sendVideoMessage:context: —— 打印参数和返回值
+              // 精准 hook sendVideoMessage:context: —— 先于 TraceCameraClasses 执行, 不覆盖已有 hook
               {
                   SEL svmSel = NSSelectorFromString(@"sendVideoMessage:context:");
                   Class svmCls = objc_getClass("WKPanelCameraFuncItem");
@@ -1147,15 +1146,18 @@ jobs:
                       Method m = FindOwnMethod(svmCls, svmSel);
                       if (m) {
                           char rt[32]; method_getReturnType(m, rt, sizeof(rt));
-                          LOGE([NSString stringWithFormat:@"svm-sel hooked rt=%s", rt]);
-                          void *origIMP = method_getImplementation(m);
-                          g_origMap[MapKey(svmCls, svmSel)] = [NSValue valueWithPointer:origIMP];
-                          g_descMap[MapKey(svmCls, svmSel)] = @YES;
+                          NSString *key = MapKey(svmCls, svmSel);
+                          if (!g_origMap[key]) {
+                              void *origIMP = method_getImplementation(m);
+                              g_origMap[key] = [NSValue valueWithPointer:origIMP];
+                          }
+                          g_descMap[key] = @YES;
                           method_setImplementation(m, (IMP)h_svm);
-                          LOGE(@"svm-hook OK");
+                          LOGE([NSString stringWithFormat:@"svm-hook OK rt=%s", rt]);
                       } else LOGE(@"svm method not found");
                   } else LOGE([NSString stringWithFormat:@"svm cls=%p sel=%p", svmCls, svmSel]);
               }
+              TraceCameraClasses();
               // 视频发送链路关键 selector
               DumpMethods(@"WKVideoData");
               DumpMethods(@"FAVideoView");
