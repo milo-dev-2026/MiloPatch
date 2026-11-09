@@ -1273,12 +1273,17 @@ jobs:
                   uintptr_t ra = (uintptr_t)__builtin_return_address(0);
                   if (g_fvLo && ra >= g_fvLo && ra < g_fvHi && [key isKindOfClass:[NSString class]]) {
                       NSString *ks = (NSString *)key;
-                      if ([ks isEqualToString:@"vip"] || [ks isEqualToString:@"verified"]) {
+                      if ([ks isEqualToString:@"verified"]) {
                           id orig = ((id(*)(id, SEL, id))g_dorig[idx])(self, _cmd, key);
                           if (!orig || ([orig respondsToSelector:@selector(boolValue)] && ![orig boolValue])) {
                               LOGE([NSString stringWithFormat:@"fvcfg FORCE-YES key=%@ (was %@)", ks, orig]);
                               return @YES;
                           }
+                          return orig;
+                      }
+                      if ([ks isEqualToString:@"vip"]) {
+                          id orig = ((id(*)(id, SEL, id))g_dorig[idx])(self, _cmd, key);
+                          LOGE([NSString stringWithFormat:@"fvcfg VIP-KEEP val=%@", orig]);
                           return orig;
                       }
                   }
