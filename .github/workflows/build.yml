@@ -1102,7 +1102,16 @@ jobs:
               if (!data) return;
               NSString *rel = RelPathFromData(data);
               if (!rel) { LOGE([NSString stringWithFormat:@"%@ skip norel", tag]); return; }
-              NSString *full = [NSString stringWithFormat:@"http://101.35.120.27:8090/milo/%@", [rel substringFromIndex:13]];
+              // 优先用 thumbImageURL 的 host (COS CDN 快 7 倍), 兜底回源网关
+              NSString *hostBase = @"http://101.35.120.27:8090/milo";
+              @try {
+                  id turl0 = [data valueForKey:@"thumbImageURL"];
+                  if ([turl0 isKindOfClass:[NSString class]]) {
+                      NSURL *tu = [NSURL URLWithString:(NSString *)turl0];
+                      if (tu.scheme && tu.host) hostBase = [NSString stringWithFormat:@"%@://%@", tu.scheme, tu.host];
+                  }
+              } @catch (NSException *e) {}
+              NSString *full = [NSString stringWithFormat:@"%@/%@", hostBase, [rel substringFromIndex:13]];
               NSURL *u = [NSURL URLWithString:full];
               if (!u) return;
               for (NSString *pk in @[@"videoURL", @"imageURL"]) {
@@ -1137,13 +1146,55 @@ jobs:
               IMP o = FindOrig(self, _cmd);
               if (o) ((void(*)(id, SEL))o)(self, _cmd);
           }
-          // ---- FAVideoView 播放失败诊断 ----
+          // ---- FAVideoView 播放失败诊断 + 下载优先播放 ----
+          static NSString *MiloLocalVideoPath(NSString *key) {
+              NSString *dir = [NSTemporaryDirectory() stringByAppendingPathComponent:@"milovid"];
+              static dispatch_once_t onceToken;
+              dispatch_once(&onceToken, ^{
+                  [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+              });
+              return [dir stringByAppendingPathComponent:[key stringByAppendingString:@".mp4"]];
+          }
           static void h_fav_setasset(id self, SEL _cmd, id asset) {
-              @try {
-                  id u = nil; @try { u = [asset valueForKey:@"URL"]; } @catch (NSException *e) {}
-                  LOGE([NSString stringWithFormat:@"FAV setAsset url=%@", u]);
-              } @catch (NSException *e) {}
               IMP o = FindOrig(self, _cmd);
+              id u = nil; @try { u = [asset valueForKey:@"URL"]; } @catch (NSException *e) {}
+              // 远程 http 资源: 先下到本地再播 (本地文件嗅探格式, 不受 octet-stream 影响, 且走 CDN 全速)
+              if ([u isKindOfClass:[NSURL class]] && [[(NSURL *)u scheme] hasPrefix:@"http"] && o) {
+                  NSURL *remote = (NSURL *)u;
+                  NSString *key = [remote lastPathComponent] ?: @"v";
+                  NSString *local = MiloLocalVideoPath(key);
+                  if ([[NSFileManager defaultManager] fileExistsAtPath:local]) {
+                      id la = [objc_getClass("AVURLAsset") assetWithURL:[NSURL fileURLWithPath:local]];
+                      LOGE([NSString stringWithFormat:@"FAV setAsset cache-hit key=%@", key]);
+                      ((void(*)(id, SEL, id))o)(self, _cmd, la);
+                      return;
+                  }
+                  LOGE([NSString stringWithFormat:@"FAV setAsset dl key=%@ url=%@", key, [remote absoluteString]]);
+                  __weak id weakSelf = self;
+                  SEL cmdCap = _cmd;
+                  id assetCap = asset;
+                  [[[NSURLSession sharedSession] downloadTaskWithURL:remote completionHandler:^(NSURL *loc, NSURLResponse *resp, NSError *err) {
+                      id sself = weakSelf;
+                      if (loc && !err && sself) {
+                          @try {
+                              [[NSFileManager defaultManager] removeItemAtPath:local error:nil];
+                              [[NSFileManager defaultManager] moveItemAtURL:loc toURL:[NSURL fileURLWithPath:local] error:nil];
+                          } @catch (NSException *e) {}
+                          dispatch_async(dispatch_get_main_queue(), ^{
+                              id la = [objc_getClass("AVURLAsset") assetWithURL:[NSURL fileURLWithPath:local]];
+                              LOGE([NSString stringWithFormat:@"FAV dl-ok key=%@ -> local", key]);
+                              ((void(*)(id, SEL, id))o)(sself, cmdCap, la);
+                          });
+                      } else {
+                          LOGE([NSString stringWithFormat:@"FAV dl-err key=%@ err=%@", key, err]);
+                          if (sself) dispatch_async(dispatch_get_main_queue(), ^{
+                              ((void(*)(id, SEL, id))o)(sself, cmdCap, assetCap);
+                          });
+                      }
+                  }] resume];
+                  return;
+              }
+              @try { LOGE([NSString stringWithFormat:@"FAV setAsset url=%@", u]); } @catch (NSException *e) {}
               if (o) ((void(*)(id, SEL, id))o)(self, _cmd, asset);
           }
           static void h_fav_status(id self, SEL _cmd) {
@@ -1772,7 +1823,7 @@ jobs:
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=maxvd8 03-40");
+              LOGE(@"BUILD=maxvd9 04-00");
               ComputeFVRange();
               const char *names[2] = { "__NSDictionaryM", "__NSDictionaryI" };
               for (int i = 0; i < 2; i++) {
