@@ -1697,6 +1697,94 @@ jobs:
               } @catch (NSException *e) {}
           }
 
+          // ===== 精准 UI 补丁(基于 brand3 真实视图树 dump) =====
+          // 登录页 logo 数据(CI 从 milo_logo.png 生成 logo.h)
+          #include "logo.h"
+          static UIImage *MiloLogoImg(void) {
+              static UIImage *img = nil;
+              if (!img && kMiloLogoPngLen > 0) {
+                  img = [UIImage imageWithData:[NSData dataWithBytes:kMiloLogoPng length:kMiloLogoPngLen] scale:3.0];
+              }
+              return img;
+          }
+          // 1) 登录页欢迎图标: LaunchIcon 是 main bundle 资源, hook imageNamed: 命中即换
+          static IMP g_imgNamedOrig2 = NULL;
+          static id h_imgNamed2(id self, SEL _cmd, id name) {
+              @try {
+                  if ([name isKindOfClass:[NSString class]] && [name isEqualToString:@"LaunchIcon"]) {
+                      UIImage *m = MiloLogoImg();
+                      if (m) return m;
+                  }
+              } @catch (NSException *e) {}
+              return ((id(*)(id, SEL, id))g_imgNamedOrig2)(self, _cmd, name);
+          }
+          // 2) 隐藏指定文字按钮(登录页"设置"等): 读按钮 title, 在 didMoveToWindow 判
+          static IMP g_btnDmwOrig = NULL;
+          static void h_btn_dmw(id self, SEL _cmd) {
+              ((void(*)(id, SEL))g_btnDmwOrig)(self, _cmd);
+              @try {
+                  NSString *t = [(UIButton *)self titleForState:0];
+                  if ([t isEqualToString:@"设置"]) {
+                      // 登录页设置按钮(带 login_setting 图)在右上; 通过图片名二次确认
+                      id img = [(UIButton *)self imageForState:0];
+                      NSString *d = img ? [img description] : @"";
+                      if ([d containsString:@"login_setting"]) {
+                          [(UIView *)self setHidden:YES];
+                          LOGE(@"login setting btn hidden(via title+img)");
+                      }
+                  }
+              } @catch (NSException *e) {}
+          }
+          // 3) 我的页面入口过滤: 删 余额/我的道具/道具商城/会员中心/网页登录/分享邀请
+          static BOOL MeEntryBlocked(NSString *t) {
+              if (!t.length) return NO;
+              NSArray *bad = @[@"分享邀请", @"网页登录", @"会员中心", @"道具商城", @"我的道具", @"余额", @"UCoin"];
+              for (NSString *b in bad) if ([t containsString:b]) return YES;
+              return NO;
+          }
+          // hook UITableView dataSource numberOfRowsInSection: 对 WKMeVC 少报行数不保险(cell 复用会错位)
+          // 改为 hook WKMeItemCell 布局: 命中即压扁隐藏
+          static IMP g_cellLsuOrig = NULL;
+          static void h_cell_layout(id self, SEL _cmd) {
+              @try {
+                  NSString *cls = NSStringFromClass([self class]);
+                  if ([cls isEqualToString:@"WKMeItemCell"]) {
+                      UILabel *lab = nil;
+                      @try { lab = [(UITableViewCell *)self textLabel]; } @catch (NSException *e) {}
+                      if (lab && MeEntryBlocked(lab.text)) {
+                          [(UIView *)self setHidden:YES];
+                          [(UIView *)self setFrame:CGRectMake(0, ((UIView *)self).frame.origin.y, 402, 0)];
+                          [(UITableViewCell *)self setUserInteractionEnabled:NO];
+                      }
+                  }
+              } @catch (NSException *e) {}
+              ((void(*)(id, SEL))g_cellLsuOrig)(self, _cmd);
+          }
+          // 更稳的做法: hook WKMeVC 的 tableView heightForRow -> 0, 配 cellForRow 返回空
+          static IMP g_meHeightOrig = NULL;
+          static double h_me_height(id self, SEL _cmd, id tv, id ip) {
+              return ((double(*)(id, SEL, id, id))g_meHeightOrig)(self, _cmd, tv, ip);
+          }
+          static IMP g_meCellOrig = NULL;
+          static id h_me_cell(id self, SEL _cmd, id tv, id ip) {
+              id cell = ((id(*)(id, SEL, id, id))g_meCellOrig)(self, _cmd, tv, ip);
+              @try {
+                  // 找 cell 里所有 UILabel, 命中即整格压扁
+                  NSMutableArray *stack = [NSMutableArray arrayWithObject:cell];
+                  NSString *txt = nil;
+                  while (stack.count) {
+                      UIView *v = [stack lastObject]; [stack removeLastObject];
+                      if ([v isKindOfClass:[UILabel class]]) { NSString *t = ((UILabel *)v).text; if (t.length && !txt) txt = t; }
+                      for (UIView *sv in v.subviews) [stack addObject:sv];
+                  }
+                  if (MeEntryBlocked(txt)) {
+                      [(UIView *)cell setHidden:YES];
+                      [(UIView *)cell setClipsToBounds:YES];
+                  }
+              } @catch (NSException *e) {}
+              return cell;
+          }
+
           // ZLPhotoBrowser 的视频时长上限: 0 会导致"不能选择超过0秒的视频"
           static IMP g_mvdOrig = NULL;
           static NSInteger h_mvd(id self, SEL _cmd) {
@@ -1964,7 +2052,7 @@ jobs:
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=brand3 06-10");
+              LOGE(@"BUILD=brand4 06-40");
               ComputeFVRange();
               // 视图树 dump: hook 全部相关 VC 的 viewDidAppear
               @try {
@@ -1973,6 +2061,25 @@ jobs:
                       Method m = class_getInstanceMethod(ui, @selector(viewDidAppear:));
                       if (m) { g_vcaOrig = method_getImplementation(m); method_setImplementation(m, (IMP)h_vc_appear); LOGE(@"vc appear dump hooked"); }
                   }
+              } @catch (NSException *e) {}
+              // 精准 UI: 登录 logo 替换(imageNamed 命中 LaunchIcon)
+              @try {
+                  Method m = class_getClassMethod([UIImage class], @selector(imageNamed:));
+                  if (m) { g_imgNamedOrig2 = method_getImplementation(m); method_setImplementation(m, (IMP)h_imgNamed2); LOGE(@"login logo hook on"); }
+              } @catch (NSException *e) {}
+              // 精准 UI: 隐藏登录"设置"按钮(title+img 双判定)
+              @try {
+                  Method m = class_getInstanceMethod([UIButton class], NSSelectorFromString(@"didMoveToWindow"));
+                  if (m) { g_btnDmwOrig = method_getImplementation(m); method_setImplementation(m, (IMP)h_btn_dmw); LOGE(@"btn dmw hook on"); }
+              } @catch (NSException *e) {}
+              // 精准 UI: 我的页面入口过滤(cellForRow 命中即压扁)
+              @try {
+                  Class mevc = objc_getClass("WKMeVC");
+                  if (mevc) {
+                      Method m = class_getInstanceMethod(mevc, @selector(tableView:cellForRowAtIndexPath:));
+                      if (m) { g_meCellOrig = method_getImplementation(m); method_setImplementation(m, (IMP)h_me_cell); LOGE(@"WKMeVC cell filter on"); }
+                      else { LOGE(@"WKMeVC cellForRow absent"); }
+                  } else { LOGE(@"WKMeVC absent"); }
               } @catch (NSException *e) {}
               // 品牌化: bundle id 伪装
               @try {
@@ -2278,6 +2385,13 @@ jobs:
           ls /usr/lib/llvm-14/bin/ | grep -i lld || true
           LINKER=$(command -v ld64.lld || echo /usr/lib/llvm-14/bin/ld64.lld)
           echo "using linker: $LINKER"
+          # 把 logo png 转成 C 数组(供登录页图标替换)
+          if [ -f milo_logo.png ]; then
+            echo "embedding milo_logo.png"
+            xxd -i milo_logo.png | sed 's/unsigned char milo_logo_png\[\]/static const unsigned char kMiloLogoPng[]/; s/unsigned int milo_logo_png_len/static const unsigned int kMiloLogoPngLen/' > logo.h
+          else
+            echo "static const unsigned char kMiloLogoPng[1]={0}; static const unsigned int kMiloLogoPngLen=0;" > logo.h
+          fi
           clang -target arm64-apple-ios14.0 \
             -isysroot "$SDK" \
             -F"$SDK/System/Library/Frameworks" \
