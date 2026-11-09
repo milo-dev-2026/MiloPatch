@@ -151,6 +151,7 @@ jobs:
           static void h_present(id self, SEL _cmd, UIViewController *vc, BOOL anim, void (^comp)(void)) {
               @try {
                   NSString *cn = NSStringFromClass([vc class]);
+                  LOGE([NSString stringWithFormat:@"presentVC %@ by=%@", cn, NSStringFromClass([self class])]);
                   NSString *t = nil, *m = nil;
                   if ([vc isKindOfClass:[UIAlertController class]]) {
                       t = ((UIAlertController *)vc).title;
@@ -172,6 +173,7 @@ jobs:
 
           static void (*o_push)(id, SEL, UIViewController *, BOOL);
           static void h_push(id self, SEL _cmd, UIViewController *vc, BOOL anim) {
+              @try { LOGE([NSString stringWithFormat:@"pushVC %@ by=%@", vc ? NSStringFromClass([vc class]) : @"(nil)", NSStringFromClass([self class])]); } @catch (NSException *e) {}
               if (IsPayClass(vc)) return;
               o_push(self, _cmd, vc, anim);
           }
@@ -273,7 +275,7 @@ jobs:
           }
           static BOOL RunLogWorthy(NSString *s) {
               static NSArray *kws = nil;
-              if (!kws) kws = @[@"vtrace", @"vinvalid", @"vloaddata", @"vdatasrc", @"hookok", @"hookmiss", @"traceclass", @"methods ", @"ybfixed", @"CRASH", @"presentVC"];
+              if (!kws) kws = @[@"vtrace", @"vinvalid", @"vloaddata", @"vdatasrc", @"hookok", @"hookmiss", @"traceclass", @"methods ", @"ybfixed", @"CRASH", @"presentVC", @"pushVC"];
               for (NSString *k in kws) if ([s rangeOfString:k].location != NSNotFound) return YES;
               return NO;
           }
@@ -1065,13 +1067,6 @@ jobs:
               } @catch (NSException *e) {}
           }
           static void h_tr1b(id self, SEL _cmd, uintptr_t a1) { TLog(self, _cmd, nil, a1, 0, NO); IMP o = FindOrig(self, _cmd); if (o) ((void(*)(id, SEL, uintptr_t))o)(self, _cmd, a1); }
-          static void h_present(id self, SEL _cmd, id vc, uintptr_t anim, id comp) {
-              @try {
-                  LOGE([NSString stringWithFormat:@"presentVC %@ by=%@", vc ? NSStringFromClass([vc class]) : @"(nil)", NSStringFromClass([self class])]);
-              } @catch (NSException *e) {}
-              IMP o = FindOrig(self, _cmd);
-              if (o) ((void(*)(id, SEL, id, uintptr_t, id))o)(self, _cmd, vc, anim, comp);
-          }
           static void TraceCameraClasses(void) {
               int n = objc_getClassList(NULL, 0);
               Class *cs = (Class *)malloc(sizeof(Class) * n);
@@ -1092,7 +1087,6 @@ jobs:
           static void HookVideoAndSend(void) {
               if (!g_origMap) g_origMap = [NSMutableDictionary dictionary];
               if (!g_descMap) g_descMap = [NSMutableDictionary dictionary];
-              HookClassSel(@"UIViewController", @selector(presentViewController:animated:completion:), (void *)h_present, @"trace");
               TraceCameraClasses();
               DumpMethods(@"WKVideoData");
               DumpMethods(@"FAVideoView");
