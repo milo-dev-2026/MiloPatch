@@ -1645,6 +1645,58 @@ jobs:
               } @catch (NSException *e) {}
               return ((id(*)(id, SEL, id))g_imgNamedOrig)(self, _cmd, name);
           }
+          // 隐藏好友头像"未认证"标, 保留 VIP 标
+          static IMP g_imgViewSetImgOrig = NULL;
+          static void h_imgview_setimg(id self, SEL _cmd, id img) {
+              @try {
+                  NSString *cls = NSStringFromClass([self class]);
+                  if ([cls containsString:@"UTalkBadge"] || [cls containsString:@"UnverifyBadge"]) {
+                      ((void(*)(id, SEL, id))g_imgViewSetImgOrig)(self, _cmd, nil);
+                      self.hidden = YES;
+                      return;
+                  }
+              } @catch (NSException *e) {}
+              ((void(*)(id, SEL, id))g_imgViewSetImgOrig)(self, _cmd, img);
+          }
+          // 隐藏登录页"设置"按钮
+          static IMP g_btnSetImgOrig = NULL;
+          static void h_btn_setimg(id self, SEL _cmd, id img, NSUInteger state) {
+              @try {
+                  NSString *desc = [self description];
+                  if ([desc containsString:@"login_setting"]) {
+                      self.hidden = YES;
+                      LOGE(@"login setting btn hidden");
+                  }
+              } @catch (NSException *e) {}
+              ((void(*)(id, SEL, id, NSUInteger))g_btnSetImgOrig)(self, _cmd, img, state);
+          }
+          // 隐藏通讯录"文件助手"
+          static IMP g_filehelperOrig = NULL;
+          static id h_filehelper(id self, SEL _cmd) {
+              @try { LOGE(@"fileHelperUID called"); } @catch (NSException *e) {}
+              return nil;
+          }
+          // 我的页面 cell 转储(调试用, 后续精准删入口)
+          static IMP g_tvCellOrig = NULL;
+          static id h_tv_cell(id self, SEL _cmd, id tv, id ip) {
+              id cell = ((id(*)(id, SEL, id, id))g_tvCellOrig)(self, _cmd, tv, ip);
+              @try {
+                  NSString *d = NSStringFromClass([self class]);
+                  if ([d containsString:@"Me"] || [d containsString:@"Mine"] || [d containsString:@"Setting"]) {
+                      NSString *txt = @"";
+                      for (UIView *v in [(UIView *)cell subviews]) {
+                          for (UIView *sv in [v subviews]) {
+                              if ([sv isKindOfClass:[UILabel class]]) {
+                                  UILabel *l = (UILabel *)sv;
+                                  if (l.text.length) txt = [txt stringByAppendingFormat:@"%@|", l.text];
+                              }
+                          }
+                      }
+                      if (txt.length) LOGE([NSString stringWithFormat:@"MECELL %@ s%ld r%ld => %@", d, (long)[ip section], (long)[ip row], txt]);
+                  }
+              } @catch (NSException *e) {}
+              return cell;
+          }
 
           // ZLPhotoBrowser 的视频时长上限: 0 会导致"不能选择超过0秒的视频"
           static IMP g_mvdOrig = NULL;
@@ -1913,8 +1965,52 @@ jobs:
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=brand1 05-20");
+              LOGE(@"BUILD=brand2 05-50");
               ComputeFVRange();
+              // 隐藏未认证标
+              @try {
+                  Class ivc = objc_getClass("AvatarUTalkBadge");
+                  if (ivc) {
+                      Method m = class_getInstanceMethod(ivc, @selector(setImage:));
+                      if (m) { g_imgViewSetImgOrig = method_getImplementation(m); method_setImplementation(m, (IMP)h_imgview_setimg); LOGE(@"utalk badge hidden"); }
+                  } else { LOGE(@"AvatarUTalkBadge absent"); }
+              } @catch (NSException *e) {}
+              // 隐藏登录设置按钮
+              @try {
+                  Method m = class_getInstanceMethod([UIButton class], @selector(setImage:forState:));
+                  if (m) { g_btnSetImgOrig = method_getImplementation(m); method_setImplementation(m, (IMP)h_btn_setimg); LOGE(@"btn setimg hooked"); }
+              } @catch (NSException *e) {}
+              // 文件助手
+              @try {
+                  int cn = objc_getClassList(NULL, 0);
+                  Class *cs = (Class *)malloc(sizeof(Class) * (cn > 0 ? cn : 1));
+                  if (cs) {
+                      cn = objc_getClassList(cs, cn);
+                      SEL fs = NSSelectorFromString(@"fileHelperUID");
+                      int hooked = 0;
+                      for (int i = 0; i < cn && hooked < 4; i++) {
+                          Method m = class_getInstanceMethod(cs[i], fs);
+                          if (!m) continue;
+                          Class sup = class_getSuperclass(cs[i]);
+                          Method sm = sup ? class_getInstanceMethod(sup, fs) : NULL;
+                          if (sm && method_getImplementation(sm) == method_getImplementation(m)) continue;
+                          g_filehelperOrig = method_getImplementation(m);
+                          method_setImplementation(m, (IMP)h_filehelper);
+                          LOGE([NSString stringWithFormat:@"fileHelperUID hooked %s", class_getName(cs[i])]);
+                          hooked++;
+                      }
+                      free(cs);
+                  }
+              } @catch (NSException *e) {}
+              // 我的页面 cell 转储
+              @try {
+                  Class mevc = objc_getClass("WKMeVC");
+                  if (mevc) {
+                      Method m = class_getInstanceMethod(mevc, @selector(tableView:cellForRowAtIndexPath:));
+                      if (m) { g_tvCellOrig = method_getImplementation(m); method_setImplementation(m, (IMP)h_tv_cell); LOGE(@"WKMeVC cell dump hooked"); }
+                      else { LOGE(@"WKMeVC cellForRow absent"); }
+                  } else { LOGE(@"WKMeVC absent"); }
+              } @catch (NSException *e) {}
               // 品牌化: bundle id 伪装
               @try {
                   Method mb = class_getInstanceMethod([NSBundle class], @selector(bundleIdentifier));
