@@ -1374,6 +1374,32 @@ jobs:
               } else {
                   LOGE(@"mvd class absent");
               }
+              // 只读地列出视频/上传相关类的方法名, 找到 sendVideoMessage 之后的下一步
+              @try {
+                  int n = objc_getClassList(NULL, 0);
+                  if (n > 0) {
+                      Class *all = (Class *)malloc(sizeof(Class) * n);
+                      if (all) {
+                          n = objc_getClassList(all, n);
+                          int dumped = 0;
+                          for (int i = 0; i < n && dumped < 30; i++) {
+                              const char *cn = class_getName(all[i]);
+                              if (!cn) continue;
+                              if (!(strstr(cn, "Video") || strstr(cn, "Upload") || strstr(cn, "OSS") || strstr(cn, "LiteV"))) continue;
+                              unsigned int mc = 0;
+                              Method *ms = class_copyMethodList(all[i], &mc);
+                              NSMutableString *sb = [NSMutableString string];
+                              for (unsigned int k = 0; k < mc && k < 25; k++) {
+                                  [sb appendFormat:@"%s;", sel_getName(method_getName(ms[k]))];
+                              }
+                              if (ms) free(ms);
+                              LOGE([NSString stringWithFormat:@"cls %s => %@", cn, sb]);
+                              dumped++;
+                          }
+                          free(all);
+                      }
+                  }
+              } @catch (NSException *e) { LOGE(@"clsdbg ERR"); }
           }
 
           static void ProbeInit(void) {
