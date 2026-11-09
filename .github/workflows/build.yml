@@ -1678,6 +1678,7 @@ jobs:
               } @catch (NSException *e) {}
           }
           static IMP g_vcaOrig = NULL;
+          static UIImage *MiloLogoImg(void);
           // 遍历视图树, 登录页换 logo + 持续隐藏"设置"按钮
           static void PatchLoginViews(UIView *vv) {
               @try {
