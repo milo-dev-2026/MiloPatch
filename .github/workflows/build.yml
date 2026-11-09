@@ -1568,7 +1568,7 @@ jobs:
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=maxvd2 01-20");
+              LOGE(@"BUILD=maxvd3 01-30");
               ComputeFVRange();
               const char *names[2] = { "__NSDictionaryM", "__NSDictionaryI" };
               for (int i = 0; i < 2; i++) {
@@ -1626,8 +1626,6 @@ jobs:
                           Class sup = class_getSuperclass(cs[i]);
                           Method sm2 = sup ? class_getInstanceMethod(sup, ms) : NULL;
                           if (sm2 && method_getImplementation(sm2) == method_getImplementation(mm)) continue;
-                          const char *img = class_getImageName(cs[i]);
-                          if (!img || !(strstr(img, "FayChat") || strstr(img, "Milo.app") || strstr(img, "FALiteVideo") || strstr(img, "FAMainModule") || strstr(img, "ZLPhoto"))) continue;
                           const char *te = method_getTypeEncoding(mm);
                           const char *nm = class_getName(cs[i]);
                           if (te && te[0] == 'd' && g_dN < 8) {
@@ -1646,8 +1644,8 @@ jobs:
                               method_setImplementation(mm, (IMP)h_maxvd);
                               LOGE([NSString stringWithFormat:@"maxvd(i) hooked %s", nm]);
                               g_mxN++;
-                          } else {
-                              LOGE([NSString stringWithFormat:@"maxvd skip %s type=%s", nm, te ? te : "?"]);
+                          } else if (te) {
+                              LOGE([NSString stringWithFormat:@"maxvd skip %s type=%s", nm, te]);
                           }
                       }
                       free(cs);
