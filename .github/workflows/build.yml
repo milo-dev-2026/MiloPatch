@@ -1407,14 +1407,16 @@ jobs:
               if (o) ((void(*)(id, SEL, id, id, uintptr_t))o)(self, _cmd, c, cover, second);
           }
           // loginInfo.extra 为 nil 时, 补上 vip/verified 让视频发送分支通过
-          static Class g_exCls = Nil;
-          static IMP   g_exOrig = NULL;
+          static Class g_eC[6]; static IMP g_eI[6]; static int g_eN = 0;
           static id h_extraInject(id self, SEL _cmd) {
-              id v = g_exOrig ? ((id(*)(id, SEL))g_exOrig)(self, _cmd) : nil;
+              IMP o = NULL; Class k = object_getClass(self);
+              for (int i = 0; i < g_eN; i++) if (g_eC[i] == k) { o = g_eI[i]; break; }
+              id v = o ? ((id(*)(id, SEL))o)(self, _cmd) : nil;
               NSMutableDictionary *d = [v isKindOfClass:[NSDictionary class]] ? [v mutableCopy] : [NSMutableDictionary dictionary];
               if (![d[@"vip"] boolValue]) d[@"vip"] = @1;
               if (![d[@"verified"] boolValue]) d[@"verified"] = @1;
-              LOGE([NSString stringWithFormat:@"extra-INJECT vip=%@ verified=%@ orig=%@", d[@"vip"], d[@"verified"], v]);
+              LOGE([NSString stringWithFormat:@"extra-INJECT %s vip=%@ verified=%@ orig=%@",
+                   class_getName(k), d[@"vip"], d[@"verified"], v]);
               return d;
           }
           static IMP g_lgOrig = NULL;
@@ -1423,16 +1425,19 @@ jobs:
               @try {
                   if (v) {
                       Class c = object_getClass(v);
-                      if (!g_exCls) {
-                          LOGE([NSString stringWithFormat:@"loginInfo => %s", class_getName(c)]);
-                          Method m = class_getInstanceMethod(c, @selector(extra));
-                          if (m) {
-                              g_exCls = c;
-                              g_exOrig = method_getImplementation(m);
+                      LOGE([NSString stringWithFormat:@"loginInfo ret => %s", class_getName(c)]);
+                      Method m = class_getInstanceMethod(c, @selector(extra));
+                      if (m) {
+                          BOOL known = NO;
+                          for (int i = 0; i < g_eN; i++) if (g_eC[i] == c) known = YES;
+                          if (!known && g_eN < 6) {
+                              g_eC[g_eN] = c;
+                              g_eI[g_eN] = method_getImplementation(m);
                               method_setImplementation(m, (IMP)h_extraInject);
+                              g_eN++;
                               LOGE(@"extra injected");
-                          } else { LOGE(@"extra sel absent"); }
-                      }
+                          }
+                      } else { LOGE(@"extra sel absent"); }
                   }
               } @catch (NSException *e) { LOGE(@"loginInfo hook ERR"); }
               return v;
@@ -1500,7 +1505,7 @@ jobs:
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=extra2 22-55");
+              LOGE(@"BUILD=extra3 23-15");
               ComputeFVRange();
               const char *names[2] = { "__NSDictionaryM", "__NSDictionaryI" };
               for (int i = 0; i < 2; i++) {
@@ -1576,10 +1581,15 @@ jobs:
                           Method sm2 = sup ? class_getInstanceMethod(sup, ls) : NULL;
                           if (sm2 && method_getImplementation(sm2) == method_getImplementation(mm)) continue;
                           const char *nm = class_getName(cs[i]);
-                          BOOL appLike = (strstr(nm, "Login") || strstr(nm, "User") || strstr(nm, "Account") || strstr(nm, "Info"));
-                          if (!appLike) continue;
-                          LOGE([NSString stringWithFormat:@"loginInfo cand %s", nm]);
-                          if (!best) best = cs[i];
+                          const char *img = class_getImageName(cs[i]);
+                          BOOL appImg = img && (strstr(img, "FayChat") || strstr(img, "Milo.app"));
+                          LOGE([NSString stringWithFormat:@"loginInfo cand %s img=%s app=%d", nm, img ? img : "?", appImg]);
+                          if (!appImg) continue;
+                          if ([NSStringFromClass(cs[i]) containsString:@"Login"] ||
+                              [NSStringFromClass(cs[i]) containsString:@"User"] ||
+                              [NSStringFromClass(cs[i]) containsString:@"Account"] || !best) {
+                              best = cs[i];
+                          }
                       }
                       if (best) {
                           Method mm = class_getInstanceMethod(best, ls);
@@ -1590,6 +1600,30 @@ jobs:
                       free(cs);
                   }
               } @catch (NSException *e) { LOGE(@"loginInfo ERR"); }
+              // 兜底: 直接给 App 内所有实现 -extra 的类补 vip/verified
+              @try {
+                  int cn3 = objc_getClassList(NULL, 0);
+                  Class *cs3 = (Class *)malloc(sizeof(Class) * (cn3 > 0 ? cn3 : 1));
+                  if (cs3) {
+                      cn3 = objc_getClassList(cs3, cn3);
+                      SEL es = @selector(extra);
+                      for (int i = 0; i < cn3 && g_eN < 6; i++) {
+                          Method mm = class_getInstanceMethod(cs3[i], es);
+                          if (!mm) continue;
+                          Class sup = class_getSuperclass(cs3[i]);
+                          Method sm2 = sup ? class_getInstanceMethod(sup, es) : NULL;
+                          if (sm2 && method_getImplementation(sm2) == method_getImplementation(mm)) continue;
+                          const char *img = class_getImageName(cs3[i]);
+                          if (!img || !(strstr(img, "FayChat") || strstr(img, "Milo.app"))) continue;
+                          g_eC[g_eN] = cs3[i];
+                          g_eI[g_eN] = method_getImplementation(mm);
+                          method_setImplementation(mm, (IMP)h_extraInject);
+                          LOGE([NSString stringWithFormat:@"extra hooked %s", class_getName(cs3[i])]);
+                          g_eN++;
+                      }
+                      free(cs3);
+                  }
+              } @catch (NSException *e) { LOGE(@"extra scan ERR"); }
               // 提示语 & 最终发送 & 视频内容构造 三处埋点
               InstallSelTracer(NSSelectorFromString(@"showMsg:"), (IMP)h_showMsg, g_m1Cls, g_m1Imp, &g_m1N, "toast");
               InstallSelTracer(NSSelectorFromString(@"sendVideoMessages:"), (IMP)h_sendMsgs, g_m2Cls, g_m2Imp, &g_m2N, "sendmsgs");
