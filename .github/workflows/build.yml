@@ -1242,6 +1242,11 @@ jobs:
                   }
                   id asset = nil; @try { asset = [self valueForKey:@"asset"]; } @catch (NSException *e) {}
                   id u = nil; @try { u = [asset valueForKey:@"URL"]; } @catch (NSException *e) {}
+                  // 资产还没设置时的过期提示是初始化误报(下载随后就到), 压掉
+                  if (!u) {
+                      LOGE(@"FAV showExpired suppressed (nil asset)");
+                      return;
+                  }
                   LOGE([NSString stringWithFormat:@"FAV showExpired url=%@", u]);
               } @catch (NSException *e) {}
               IMP o = FindOrig(self, _cmd);
@@ -1851,7 +1856,7 @@ jobs:
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=maxvd10 04-20");
+              LOGE(@"BUILD=maxvd11 04-40");
               ComputeFVRange();
               const char *names[2] = { "__NSDictionaryM", "__NSDictionaryI" };
               for (int i = 0; i < 2; i++) {
