@@ -1353,7 +1353,55 @@ jobs:
               return v;
           }
 
-          // 服务端 remoteConfig.maxVideoDuration 为 0 时, 视频一定被判超限 -> 兜底 60
+          // 抓视频发送路径里 App 自己弹的提示/最终发送调用
+          static Class g_m1Cls[8]; static IMP g_m1Imp[8]; static int g_m1N = 0;
+          static void h_showMsg(id self, SEL _cmd, id arg) {
+              @try {
+                  NSString *s = [arg isKindOfClass:[NSString class]] ? (NSString *)arg : [arg description];
+                  LOGE([NSString stringWithFormat:@"TOAST %s => %@", class_getName(object_getClass(self)),
+                       s.length > 200 ? [s substringToIndex:200] : s]);
+              } @catch (NSException *e) {}
+              IMP o = NULL; Class k = object_getClass(self);
+              for (int i = 0; i < g_m1N; i++) if (g_m1Cls[i] == k) { o = g_m1Imp[i]; break; }
+              if (o) ((void(*)(id, SEL, id))o)(self, _cmd, arg);
+          }
+          static Class g_m2Cls[8]; static IMP g_m2Imp[8]; static int g_m2N = 0;
+          static void h_sendMsgs(id self, SEL _cmd, id arg) {
+              @try { LOGE([NSString stringWithFormat:@"SEND-MSGS %s => %@", class_getName(object_getClass(self)), [arg description]]); } @catch (NSException *e) {}
+              IMP o = NULL; Class k = object_getClass(self);
+              for (int i = 0; i < g_m2N; i++) if (g_m2Cls[i] == k) { o = g_m2Imp[i]; break; }
+              if (o) ((void(*)(id, SEL, id))o)(self, _cmd, arg);
+          }
+          static Class g_m3Cls[8]; static IMP g_m3Imp[8]; static int g_m3N = 0;
+          static void h_smallVideo(id self, SEL _cmd, id c, id cover, uintptr_t second) {
+              @try { LOGE([NSString stringWithFormat:@"SMALL-VIDEO %s second=%lu content=%@", class_getName(object_getClass(self)), (unsigned long)second, [c description]]); } @catch (NSException *e) {}
+              IMP o = NULL; Class k = object_getClass(self);
+              for (int i = 0; i < g_m3N; i++) if (g_m3Cls[i] == k) { o = g_m3Imp[i]; break; }
+              if (o) ((void(*)(id, SEL, id, id, uintptr_t))o)(self, _cmd, c, cover, second);
+          }
+          static void InstallSelTracer(SEL sel, IMP hook, Class *arr, IMP *imps, int *cnt, const char *tag) {
+              @try {
+                  int cn = objc_getClassList(NULL, 0);
+                  Class *cs = (Class *)malloc(sizeof(Class) * (cn > 0 ? cn : 1));
+                  if (!cs) return;
+                  cn = objc_getClassList(cs, cn);
+                  for (int i = 0; i < cn && *cnt < 8; i++) {
+                      Method mm = class_getInstanceMethod(cs[i], sel);
+                      if (!mm) continue;
+                      Class sup = class_getSuperclass(cs[i]);
+                      Method sm2 = sup ? class_getInstanceMethod(sup, sel) : NULL;
+                      if (sm2 && method_getImplementation(sm2) == method_getImplementation(mm)) continue;
+                      arr[*cnt] = cs[i];
+                      imps[*cnt] = method_getImplementation(mm);
+                      method_setImplementation(mm, hook);
+                      LOGE([NSString stringWithFormat:@"%s hooked %s", tag, class_getName(cs[i])]);
+                      (*cnt)++;
+                  }
+                  free(cs);
+              } @catch (NSException *e) { LOGE([NSString stringWithFormat:@"%s ERR", tag]); }
+          }
+
+
           static Class g_mxCls[8];
           static IMP   g_mxImp[8];
           static int   g_mxN = 0;
@@ -1393,7 +1441,7 @@ jobs:
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=maxvd 22-10");
+              LOGE(@"BUILD=msg 22-30");
               ComputeFVRange();
               const char *names[2] = { "__NSDictionaryM", "__NSDictionaryI" };
               for (int i = 0; i < 2; i++) {
@@ -1454,6 +1502,10 @@ jobs:
                       free(cs);
                   }
               } @catch (NSException *e) { LOGE(@"maxvd ERR"); }
+              // 提示语 & 最终发送 & 视频内容构造 三处埋点
+              InstallSelTracer(NSSelectorFromString(@"showMsg:"), (IMP)h_showMsg, g_m1Cls, g_m1Imp, &g_m1N, "toast");
+              InstallSelTracer(NSSelectorFromString(@"sendVideoMessages:"), (IMP)h_sendMsgs, g_m2Cls, g_m2Imp, &g_m2N, "sendmsgs");
+              InstallSelTracer(NSSelectorFromString(@"smallVideoContent:coverData:second:"), (IMP)h_smallVideo, g_m3Cls, g_m3Imp, &g_m3N, "smallvideo");
               // 挂异常捕获 + 压缩启动探测
               @try {
                   Class ex = objc_getClass("NSException");
