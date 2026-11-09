@@ -948,6 +948,7 @@ jobs:
           static uintptr_t h_g6(id self, SEL _cmd, uintptr_t a1, uintptr_t a2, uintptr_t a3, uintptr_t a4, uintptr_t a5, uintptr_t a6) { BOOL d = DescFlag(self, _cmd); TLog(self, _cmd, d ? (__bridge id)(void *)a1 : nil, a2, a3, d); IMP o = FindOrig(self, _cmd); return o ? ((uintptr_t(*)(id, SEL, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t))o)(self, _cmd, a1, a2, a3, a4, a5, a6) : 0; }
           static uintptr_t h_g7(id self, SEL _cmd, uintptr_t a1, uintptr_t a2, uintptr_t a3, uintptr_t a4, uintptr_t a5, uintptr_t a6, uintptr_t a7) { BOOL d = DescFlag(self, _cmd); TLog(self, _cmd, d ? (__bridge id)(void *)a1 : nil, a2, a3, d); IMP o = FindOrig(self, _cmd); return o ? ((uintptr_t(*)(id, SEL, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t))o)(self, _cmd, a1, a2, a3, a4, a5, a6, a7) : 0; }
 
+          static void HookMaxVDForObject(id obj, const char *tag);
           static void h_svm(id self, SEL _cmd, id videoArg, id contextArg) {
               @try {
                   NSString *va = videoArg ? ([videoArg isKindOfClass:[NSString class]] ? videoArg
@@ -987,6 +988,33 @@ jobs:
                           }
                       }
                   } @catch (NSException *e) { LOGE(@"svm-extra ERR"); }
+                  // 发送时现场钩 verifyUser/vipUser 的 maxVideoDuration (懒加载类, 启动扫描抓不到)
+                  @try {
+                      Class uc2 = NSClassFromString(@"WKUserInfo");
+                      if (uc2 && [uc2 respondsToSelector:@selector(shared)]) {
+                          id sh2 = ((id(*)(id, SEL))objc_msgSend)((id)uc2, sel_registerName("shared"));
+                          SEL rcSel = sel_registerName("remoteConfig");
+                          if (sh2 && [sh2 respondsToSelector:rcSel]) {
+                              id rc = ((id(*)(id, SEL))objc_msgSend)(sh2, rcSel);
+                              SEL brSel = sel_registerName("businessRights");
+                              if (rc && [rc respondsToSelector:brSel]) {
+                                  id br = ((id(*)(id, SEL))objc_msgSend)(rc, brSel);
+                                  if (br) {
+                                      SEL vuSel = sel_registerName("verifyUser");
+                                      SEL vpSel = sel_registerName("vipUser");
+                                      id vu = [br respondsToSelector:vuSel] ? ((id(*)(id, SEL))objc_msgSend)(br, vuSel) : nil;
+                                      id vp = [br respondsToSelector:vpSel] ? ((id(*)(id, SEL))objc_msgSend)(br, vpSel) : nil;
+                                      LOGE([NSString stringWithFormat:@"svm-rights br=%s vu=%s vp=%s",
+                                          class_getName(object_getClass(br)),
+                                          vu ? class_getName(object_getClass(vu)) : "nil",
+                                          vp ? class_getName(object_getClass(vp)) : "nil"]);
+                                      HookMaxVDForObject(vu, "verifyUser");
+                                      HookMaxVDForObject(vp, "vipUser");
+                                  } else { LOGE(@"svm-rights businessRights=nil"); }
+                              } else { LOGE(@"svm-rights no-bizSel"); }
+                          } else { LOGE(@"svm-rights no-rcSel"); }
+                      }
+                  } @catch (NSException *e) { LOGE(@"svm-rights ERR"); }
               } @catch (NSException *e) { LOGE([@"svm-ERR " stringByAppendingString:e.reason]); }
               IMP o = FindOrig(self, _cmd);
               static int s_svmDump = 0;
@@ -1544,6 +1572,39 @@ jobs:
               return v;
           }
 
+          // 对运行时活对象的类直接钩 maxVideoDuration (解决懒加载类扫描抓不到的问题)
+          static void HookMaxVDForObject(id obj, const char *tag) {
+              if (!obj) { LOGE([NSString stringWithFormat:@"maxvd-live %s obj=nil", tag]); return; }
+              @try {
+                  Class c = object_getClass(obj);
+                  const char *nm = class_getName(c);
+                  SEL ms = NSSelectorFromString(@"maxVideoDuration");
+                  Method mm = class_getInstanceMethod(c, ms);
+                  if (!mm) { LOGE([NSString stringWithFormat:@"maxvd-live %s cls=%s no-method", tag, nm]); return; }
+                  IMP cur = method_getImplementation(mm);
+                  if (cur == (IMP)h_maxvd || cur == (IMP)h_maxvd_d || cur == (IMP)h_maxvd_f) {
+                      LOGE([NSString stringWithFormat:@"maxvd-live %s cls=%s already", tag, nm]);
+                      return;
+                  }
+                  const char *te = method_getTypeEncoding(mm);
+                  if (te && te[0] == 'd' && g_dN < 8) {
+                      g_dC[g_dN] = c; g_dI[g_dN] = cur;
+                      method_setImplementation(mm, (IMP)h_maxvd_d); g_dN++;
+                      LOGE([NSString stringWithFormat:@"maxvd-live %s hooked(d) %s", tag, nm]);
+                  } else if (te && te[0] == 'f' && g_fN < 8) {
+                      g_fC[g_fN] = c; g_fI[g_fN] = cur;
+                      method_setImplementation(mm, (IMP)h_maxvd_f); g_fN++;
+                      LOGE([NSString stringWithFormat:@"maxvd-live %s hooked(f) %s", tag, nm]);
+                  } else if (te && (te[0] == 'q' || te[0] == 'i') && g_mxN < 8) {
+                      g_mxCls[g_mxN] = c; g_mxImp[g_mxN] = cur;
+                      method_setImplementation(mm, (IMP)h_maxvd); g_mxN++;
+                      LOGE([NSString stringWithFormat:@"maxvd-live %s hooked(i) %s", tag, nm]);
+                  } else {
+                      LOGE([NSString stringWithFormat:@"maxvd-live %s skip %s type=%s", tag, nm, te ? te : "?"]);
+                  }
+              } @catch (NSException *e) { LOGE(@"maxvd-live ERR"); }
+          }
+
 
           static IMP g_excRaiseOrig = NULL;
           static void h_exc_raise(id self, SEL _cmd) {
@@ -1568,7 +1629,7 @@ jobs:
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=maxvd3 01-30");
+              LOGE(@"BUILD=maxvd4 01-40");
               ComputeFVRange();
               const char *names[2] = { "__NSDictionaryM", "__NSDictionaryI" };
               for (int i = 0; i < 2; i++) {
