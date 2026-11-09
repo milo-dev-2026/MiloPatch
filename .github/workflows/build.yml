@@ -1336,6 +1336,7 @@ jobs:
           }
 
           static void InstallFVCfgTrace(void) {
+              LOGE(@"BUILD=cls2 21-40");
               ComputeFVRange();
               const char *names[2] = { "__NSDictionaryM", "__NSDictionaryI" };
               for (int i = 0; i < 2; i++) {
@@ -1381,8 +1382,9 @@ jobs:
                       Class *all = (Class *)malloc(sizeof(Class) * n);
                       if (all) {
                           n = objc_getClassList(all, n);
+                          LOGE([NSString stringWithFormat:@"clsdbg total=%d", n]);
                           int dumped = 0;
-                          for (int i = 0; i < n && dumped < 30; i++) {
+                          for (int i = 0; i < n && dumped < 40; i++) {
                               const char *cn = class_getName(all[i]);
                               if (!cn) continue;
                               if (!(strstr(cn, "Video") || strstr(cn, "Upload") || strstr(cn, "OSS") || strstr(cn, "LiteV"))) continue;
