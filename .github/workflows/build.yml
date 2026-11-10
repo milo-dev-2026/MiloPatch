@@ -1610,6 +1610,7 @@ jobs:
               } @catch (NSException *e) {}
           }
           static void LabelPostProcess(UILabel *l, NSString *text);
+          static BOOL MiloRemoveRowForLabel(UILabel *l);
           static BOOL VC10Interesting(NSString *cls);
           static void MaybeDumpVC10(id vc, NSString *cls);
           static void HookTFDelegate(void);
@@ -2077,8 +2078,10 @@ jobs:
                       l.hidden = NO;
                   }
                   if (!text.length || text.length > 24) return;
-                  for (NSString *w in @[@"标签", @"座席管理", @"作息管理", @"域名配置"]) {
+                  for (NSString *w in @[@"标签", @"座席管理", @"坐席管理", @"作息管理", @"客服管理", @"域名配置"]) {
                       if ([text isEqualToString:w] || ([text containsString:w] && text.length <= w.length + 4)) {
+                          // brand12: 通讯录「标签」直接从数据源删行(不是隐藏)
+                          if ([w isEqualToString:@"标签"] && MiloRemoveRowForLabel(l)) break;
                           if (!g_win10Seen) g_win10Seen = [NSMutableSet set];
                           if (![g_win10Seen containsObject:w] && g_win10Seen.count < 6) {
                               [g_win10Seen addObject:w];
@@ -2282,8 +2285,12 @@ jobs:
                       NSMutableArray *keep = [NSMutableArray array];
                       for (id it in (NSArray *)arr) {
                           NSString *t = MiloItemTitle(it);
-                          if (t && ([t containsString:@"座席"] || [t containsString:@"作息"])) {
-                              LOGE([NSString stringWithFormat:@"RE11 drop moreItem \"%@\"", t]);
+                          NSString *icon = MiloStrProp(it, @"icon") ?: MiloStrProp(it, @"imageName") ?: MiloStrProp(it, @"iconName");
+                          BOOL drop = NO;
+                          if (t && ([t containsString:@"座席"] || [t containsString:@"坐席"] || [t containsString:@"作息"] || [t containsString:@"客服管理"])) drop = YES;
+                          if ([icon.lowercaseString containsString:@"amanyagent"]) drop = YES;
+                          if (drop) {
+                              LOGE([NSString stringWithFormat:@"RE12 drop moreItem \"%@\" icon=%@", t ?: @"", icon ?: @""]);
                               continue;
                           }
                           [keep addObject:it];
@@ -2291,7 +2298,8 @@ jobs:
                       arr = keep;
                   }
               } @catch (NSException *e) {}
-              ((void(*)(id, SEL, id))g_moreItemsOrig)(self, _cmd, arr);
+              IMP o = FindOrig(self, _cmd);
+              if (o) ((void(*)(id, SEL, id))o)(self, _cmd, arr);
           }
           // 聊天输入栏左侧菜单(两个横杠): WKConversationInputPanel._menusBtn
           static IMP g_showMenusOrig = NULL;
@@ -2345,10 +2353,15 @@ jobs:
                           }
                       }
                   }
-                  if (!g_moreItemsOrig) {
-                      Class c = NSClassFromString(@"WKMorePanel2");
+                  for (NSString *mn in @[@"WKMorePanel2", @"WKMorePanel", @"WKMoreMenus"]) {
+                      Class c = NSClassFromString(mn);
                       Method m = c ? FindOwnMethod(c, @selector(setMoreItems:)) : NULL;
-                      if (m) { g_moreItemsOrig = method_getImplementation(m); method_setImplementation(m, (IMP)h_setMoreItems); LOGE(@"RE11 hook moreItems"); }
+                      if (!m) continue;
+                      IMP cur = method_getImplementation(m);
+                      if (cur == (IMP)h_setMoreItems) continue;
+                      g_origMap[MapKey(c, @selector(setMoreItems:))] = [NSValue valueWithPointer:cur];
+                      method_setImplementation(m, (IMP)h_setMoreItems);
+                      LOGE([NSString stringWithFormat:@"RE12 hook moreItems %@", mn]);
                   }
                   if (!g_showMenusOrig) {
                       Class c = NSClassFromString(@"WKConversationInputPanel");
@@ -2366,6 +2379,117 @@ jobs:
                       if (m) { g_aboutHeaderOrig = method_getImplementation(m); method_setImplementation(m, (IMP)h_aboutHeader); LOGE(@"RE11 hook aboutHeader"); }
                   }
               } @catch (NSException *e) { LOGE(@"RE11 install ERR"); }
+          }
+          // ===== brand12: 真删行 / 余额卡片 / 关于我们圆 logo =====
+          static BOOL MiloRemoveRowForLabel(UILabel *l) {
+              @try {
+                  UIView *p = l;
+                  UITableViewCell *cell = nil;
+                  UITableView *tv = nil;
+                  for (int i = 0; i < 9 && p; i++) {
+                      p = p.superview;
+                      if ([p isKindOfClass:[UITableViewCell class]]) cell = (UITableViewCell *)p;
+                      if ([p isKindOfClass:[UITableView class]]) { tv = (UITableView *)p; break; }
+                  }
+                  if (!tv || !cell) return NO;
+                  NSIndexPath *ip = [tv indexPathForCell:cell];
+                  if (!ip) return NO;
+                  UIResponder *r = tv;
+                  while (r && ![r isKindOfClass:[UIViewController class]]) r = r.nextResponder;
+                  if (!r) return NO;
+                  id items = [r valueForKey:@"items"];
+                  if (![items isKindOfClass:[NSArray class]]) return NO;
+                  if (ip.section >= [(NSArray *)items count]) return NO;
+                  id sec = [(NSArray *)items objectAtIndex:ip.section];
+                  id rows = [sec respondsToSelector:@selector(items)] ? [sec valueForKey:@"items"] : nil;
+                  if (![rows isKindOfClass:[NSMutableArray class]] && ![rows isKindOfClass:[NSArray class]]) return NO;
+                  if (ip.row >= [(NSArray *)rows count]) return NO;
+                  NSMutableArray *mr = [NSMutableArray arrayWithArray:(NSArray *)rows];
+                  [mr removeObjectAtIndex:ip.row];
+                  if ([sec respondsToSelector:@selector(setItems:)]) [sec performSelector:@selector(setItems:) withObject:mr];
+                  [tv reloadData];
+                  LOGE([NSString stringWithFormat:@"RE12 row removed 标签 %@ sec=%ld row=%ld", NSStringFromClass([r class]),
+                        (long)ip.section, (long)ip.row]);
+                  return YES;
+              } @catch (NSException *e) { LOGE(@"RE12 row remove ERR"); }
+              return NO;
+          }
+          // 我的页: 头像下方「余额模块」= FAProfileAssetCardView, 不是表格行, 直接隐藏
+          static void MiloFixMeVC(id vc) {
+              @try {
+                  UIView *root = [vc valueForKey:@"view"];
+                  if (!root) return;
+                  NSMutableArray *stack = [NSMutableArray arrayWithObject:root];
+                  int n = 0, hit = 0;
+                  while (stack.count && n < 400) {
+                      UIView *v = [stack lastObject]; [stack removeLastObject]; n++;
+                      NSString *cn = NSStringFromClass([v class]);
+                      if ([cn containsString:@"AssetCard"] || [cn containsString:@"ProfileAsset"]) {
+                          v.hidden = YES;
+                          hit++;
+                      }
+                      for (UIView *c in v.subviews) [stack addObject:c];
+                  }
+                  if (hit) LOGE([NSString stringWithFormat:@"RE12 me assetcard hidden=%d", hit]);
+              } @catch (NSException *e) {}
+          }
+          // 关于我们: 把页面里最大的 UIImageView 换成圆形 milo
+          static void MiloFixAbout(id vc) {
+              @try {
+                  UIView *root = [vc valueForKey:@"view"];
+                  UIImage *logo = MiloLogoImg();
+                  if (!root || !logo) return;
+                  NSMutableArray *stack = [NSMutableArray arrayWithObject:root];
+                  UIImageView *best = nil;
+                  CGFloat bestA = 0;
+                  int n = 0;
+                  while (stack.count && n < 400) {
+                      UIView *v = [stack lastObject]; [stack removeLastObject]; n++;
+                      if ([v isKindOfClass:[UIImageView class]]) {
+                          CGFloat a = v.frame.size.width * v.frame.size.height;
+                          if (a > bestA) { bestA = a; best = (UIImageView *)v; }
+                      }
+                      for (UIView *c in v.subviews) [stack addObject:c];
+                  }
+                  if (best && bestA >= 40 * 40) {
+                      best.image = logo;
+                      best.contentMode = UIViewContentModeScaleAspectFit;
+                      LOGE([NSString stringWithFormat:@"RE12 about logo swapped area=%.0f", bestA]);
+                  } else {
+                      LOGE(@"RE12 about logo not found");
+                  }
+              } @catch (NSException *e) {}
+          }
+          static IMP g_meAppearOrig = NULL;
+          static IMP g_aboutAppearOrig = NULL;
+          static void h_meAppear(id self, SEL _cmd, BOOL a) {
+              if (g_meAppearOrig) ((void(*)(id, SEL, BOOL))g_meAppearOrig)(self, _cmd, a);
+              MiloFixMeVC(self);
+              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ MiloFixMeVC(self); });
+          }
+          static void h_aboutAppear(id self, SEL _cmd, BOOL a) {
+              if (g_aboutAppearOrig) ((void(*)(id, SEL, BOOL))g_aboutAppearOrig)(self, _cmd, a);
+              MiloFixAbout(self);
+              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ MiloFixAbout(self); });
+          }
+          static void MiloHookAppear(Class c, IMP newImp, IMP *store) {
+              if (!c) return;
+              SEL sel = @selector(viewDidAppear:);
+              Method own = FindOwnMethod(c, sel);
+              if (own) {
+                  IMP cur = method_getImplementation(own);
+                  if (cur == newImp) return;
+                  *store = cur;
+                  method_setImplementation(own, newImp);
+              } else {
+                  *store = class_getMethodImplementation(class_getSuperclass(c), sel);
+                  class_addMethod(c, sel, newImp, "v@:B");
+              }
+              LOGE([NSString stringWithFormat:@"RE12 appear hook %s", class_getName(c)]);
+          }
+          static void MiloFix12Hooks(void) {
+              MiloHookAppear(NSClassFromString(@"WKMeVC"), (IMP)h_meAppear, &g_meAppearOrig);
+              MiloHookAppear(NSClassFromString(@"FAAboutAppVC"), (IMP)h_aboutAppear, &g_aboutAppearOrig);
           }
           static int s_ivarDumped = 0;
           static int s_inVcAppear = 0;
@@ -2485,13 +2609,9 @@ jobs:
               }
               return img;
           }
-          // 关于我们页: 正方形 milo 图(CI 从 milo_logo_square.png 生成 logo_square.h)
+          // 关于我们页: 统一用圆形 milo logo
           static UIImage *MiloLogoSquareImg(void) {
-              static UIImage *img = nil;
-              if (!img && kMiloLogoSqPngLen > 0) {
-                  img = [UIImage imageWithData:[NSData dataWithBytes:kMiloLogoSqPng length:kMiloLogoSqPngLen] scale:2.0];
-              }
-              return img;
+              return MiloLogoImg();
           }
           // 1) 登录页欢迎图标: hook imageNamed: 命中 LaunchIcon 即换
           static IMP g_imgNamedOrig2 = NULL;
@@ -2845,7 +2965,7 @@ jobs:
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=brand11 11-40");
+              LOGE(@"BUILD=brand12 12-10");
               ComputeFVRange();
               // 视图树 dump: hook 基类 viewDidAppear(兜底子类未重写的 VC)
               @try {
@@ -2872,6 +2992,9 @@ jobs:
               // brand11: 依据 RE 的精准数据源裁剪(我的页/通讯录/设置/+号菜单/输入栏菜单/关于我们)
               dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ MiloLateHooks(); });
               dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ MiloLateHooks(); });
+              // brand12: 我的页余额卡片 / 关于我们圆 logo
+              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ MiloFix12Hooks(); });
+              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ MiloFix12Hooks(); });
               // 精准 UI: 登录 logo 替换(imageNamed 命中 LaunchIcon)
               @try {
                   Method m = class_getClassMethod([UIImage class], @selector(imageNamed:));
