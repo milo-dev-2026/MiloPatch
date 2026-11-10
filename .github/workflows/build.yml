@@ -413,6 +413,20 @@ jobs:
                   MiloNetLog([NSString stringWithFormat:@"RINGCLS(%lu) %@", (unsigned long)hits.count, [hits componentsJoinedByString:@","]]);
               } @catch (NSException *e) { MiloNetLog(@"RINGCLS ex"); }
           }
+          // ===== brand31: 挂断后延迟失活音频会话(避开 RTC 拆卸窗口, 不会崩) =====
+          static void MiloDeactivateAudioDelay31(void) {
+              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                  @try {
+                      Class s = NSClassFromString(@"AVAudioSession");
+                      if (!s) return;
+                      id ses = ((id(*)(id, SEL))objc_msgSend)(s, sel_registerName("sharedInstance"));
+                      if (!ses) return;
+                      NSError *err = nil;
+                      BOOL ok = ((BOOL(*)(id, SEL, BOOL, unsigned long, NSError **))objc_msgSend)(ses, sel_registerName("setActive:withOptions:error:"), NO, 1, &err);
+                      @try { MiloNetLog([NSString stringWithFormat:@"SESS31 off ok=%d", (int)ok]); } @catch (NSException *e) {}
+                  } @catch (NSException *e) { @try { MiloNetLog(@"SESS31 off ex"); } @catch (NSException *e2) {} }
+              });
+          }
           static void MiloStopLivekitRing28(void) {
               @try {
                   Class c = objc_getClass("_TtC9WuKongRTC11LivekitRing");
@@ -4263,6 +4277,7 @@ jobs:
           static void MiloStopRingAndClearNotif(void) {
               MiloMuteRing22();
               MiloStopLivekitRing28();
+              MiloDeactivateAudioDelay31();
               @try { AudioServicesDisposeSystemSoundID(0); } @catch (NSException *e) {}
               @try {
                   Class NC = NSClassFromString(@"UNUserNotificationCenter");
@@ -4395,7 +4410,7 @@ jobs:
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=brand30 11-11");
+              LOGE(@"BUILD=brand31 11-11");
               MiloNetLog(@"appLaunch brand18");
               ComputeFVRange();
               // 视图树 dump: hook 基类 viewDidAppear(兜底子类未重写的 VC)
@@ -4757,11 +4772,8 @@ jobs:
               for (int i28 = 1; i28 <= 10; i28++) {
                   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i28 * 2 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ MiloHookLivekitRing28(); });
               }
-              // brand30: 尽早抓 LivekitRing 实例(它可能建得很早), 每秒重试一次
-              MiloInstallNSObjectHook30();
-              for (int i30 = 1; i30 <= 20; i30++) {
-                  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i30 * 1 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ MiloInstallNSObjectHook30(); });
-              }
+              // brand31: 撤销 brand30 的 NSObject -init/+alloc hook(对象创建核心路径, 启动即崩)
+              // 改为挂断后延迟 4 秒音频会话失活 —— SystemSound 与 App 共用一个会话, 失活即静音
               // brand29: 直接上报所有名字含 Ring/Livekit 的类(绕开 LOGE 缓冲)
               dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)3 * NSEC_PER_SEC), dispatch_get_global_queue(0, 0), ^{ MiloReportRingClasses28(); });
               // 启动标记: 直接 POST, 不依赖日志缓冲, 用来确认手机上装的是哪个版本
@@ -4769,7 +4781,7 @@ jobs:
                   NSMutableURLRequest *r = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"http://101.35.120.27/probe/log"]];
                   r.HTTPMethod = @"POST";
                   r.timeoutInterval = 8;
-                  r.HTTPBody = [[NSString stringWithFormat:@"BOOT brand30 %@", [[NSProcessInfo processInfo] operatingSystemVersionString]] dataUsingEncoding:NSUTF8StringEncoding];
+                  r.HTTPBody = [[NSString stringWithFormat:@"BOOT brand31 %@", [[NSProcessInfo processInfo] operatingSystemVersionString]] dataUsingEncoding:NSUTF8StringEncoding];
                   [[[NSURLSession sharedSession] dataTaskWithRequest:r] resume];
               } @catch (NSException *e) {}
               dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
