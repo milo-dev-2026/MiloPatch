@@ -395,6 +395,7 @@ jobs:
           // ===== brand28: 直接抓 WuKongRTC.LivekitRing 实例 + 反射它的 ivar 来停铃 =====
           static void MiloNetLog(NSString *k);
           static id g_lrInst28 = nil;
+          static Class g_lrCls28 = NULL;
           static void MiloReportRingClasses28(void) {
               @try {
                   int n = objc_getClassList(NULL, 0);
@@ -488,8 +489,7 @@ jobs:
                   }
               } @catch (NSException *e) { MiloNetLog(@"LR28 stop ex"); }
           }
-          // brand30: Swift 类无 ObjC 方法可 hook, 用 NSObject -init/+alloc 捕获实例
-          static Class g_lrCls28 = NULL;
+          // brand30: Swift 类无 ObjC 方法可 hook, 用 NSObject -init 捕获实例(已停用)
           static IMP g_initO30 = NULL;
           static IMP g_allocO30 = NULL;
           // brand32: 只 hook NSObject -init(不碰 +alloc, 避免 ARC 下返回 +1 对象被提前释放)
