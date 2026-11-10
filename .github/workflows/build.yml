@@ -34,6 +34,11 @@ jobs:
           #include <string.h>
           #include <signal.h>
           #include <dlfcn.h>
+          #include <mach-o/dyld.h>
+          #include <mach-o/loader.h>
+          #include <mach-o/nlist.h>
+          #include <mach/mach.h>
+          #include <mach/mach_vm.h>
 
           static NSArray *BlockTitles(void) {
               static NSArray *a;
@@ -287,8 +292,101 @@ jobs:
               g_sidCnt23 = 0;
               LOGE([NSString stringWithFormat:@"SID23 dispose n=%d", n]);
           }
-          // brand25: 移除 __DATA,__interpose(在 dylib 里 interpose 系统库无效且是崩溃风险源),
-          // 也移除 C 函数级 hook, 只保留 AVAudioPlayer/AVPlayer 对象级停止
+          // ===== brand26: 铃声真身 AudioServicesPlaySystemSound(C 层, ObjC hook 抓不到) =====
+          // 用符号重绑定(fishhook 原理)改主程序 __la_symbol_ptr 里的函数指针
+          static BOOL MiloRinging22(void);
+          static void (*g_realPlaySS26)(SystemSoundID) = NULL;
+          static void (*g_realPlaySSc26)(SystemSoundID, void(^)(void)) = NULL;
+          static void (*g_realPlayAlert26)(SystemSoundID) = NULL;
+          static void Milo_PlaySS26(SystemSoundID sid) {
+              @try { LOGE([NSString stringWithFormat:@"SS-PLAY sid=%u", (unsigned)sid]); } @catch (NSException *e) {}
+              if (MiloRinging22()) { @try { LOGE(@"SS-PLAY blocked(静音窗口)"); } @catch (NSException *e) {} return; }
+              if (g_realPlaySS26) g_realPlaySS26(sid);
+          }
+          static void Milo_PlaySSc26(SystemSoundID sid, void (^done)(void)) {
+              @try { LOGE([NSString stringWithFormat:@"SS-PLAY-C sid=%u", (unsigned)sid]); } @catch (NSException *e) {}
+              if (MiloRinging22()) { @try { LOGE(@"SS-PLAY-C blocked(静音窗口)"); } @catch (NSException *e) {} return; }
+              if (g_realPlaySSc26) g_realPlaySSc26(sid, done);
+          }
+          static void Milo_PlayAlert26(SystemSoundID sid) {
+              @try { LOGE([NSString stringWithFormat:@"SS-ALERT sid=%u", (unsigned)sid]); } @catch (NSException *e) {}
+              if (MiloRinging22()) { @try { LOGE(@"SS-ALERT blocked(静音窗口)"); } @catch (NSException *e) {} return; }
+              if (g_realPlayAlert26) g_realPlayAlert26(sid);
+          }
+          typedef struct { const char *sym; void *repl; } MiloRb26;
+          static void MiloRebindSection26(struct section_64 *sec, intptr_t slide,
+                                          struct nlist_64 *syms, const char *strs,
+                                          uint32_t *indirect, MiloRb26 *rbs, int n) {
+              if (strcmp(sec->sectname, "__la_symbol_ptr") != 0 && strcmp(sec->sectname, "__nl_symbol_ptr") != 0) return;
+              uint32_t *idx = indirect + sec->reserved1;
+              void **slot = (void **)(slide + sec->addr);
+              size_t cnt = sec->size / sizeof(void *);
+              if (mach_vm_protect(mach_task_self(), (mach_vm_address_t)slot, sec->size, false,
+                                  VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY) != KERN_SUCCESS) {
+                  LOGE(@"brand26 vm_protect failed");
+                  return;
+              }
+              for (size_t i = 0; i < cnt; i++) {
+                  uint32_t si = idx[i];
+                  if (si == INDIRECT_SYMBOL_LOCAL || si == INDIRECT_SYMBOL_ABS) continue;
+                  const char *nm = strs + syms[si].n_un.n_strx;
+                  if (!nm || nm[0] != '_') continue;
+                  nm++;
+                  for (int k = 0; k < n; k++) {
+                      if (strcmp(nm, rbs[k].sym) == 0) {
+                          slot[i] = rbs[k].repl;
+                          LOGE([NSString stringWithFormat:@"brand26 rebind %s", rbs[k].sym]);
+                      }
+                  }
+              }
+          }
+          static void MiloInstallSS26(void) {
+              g_realPlaySS26 = (void(*)(SystemSoundID))dlsym(RTLD_DEFAULT, "AudioServicesPlaySystemSound");
+              g_realPlaySSc26 = (void(*)(SystemSoundID, void(^)(void)))dlsym(RTLD_DEFAULT, "AudioServicesPlaySystemSoundWithCompletion");
+              g_realPlayAlert26 = (void(*)(SystemSoundID))dlsym(RTLD_DEFAULT, "AudioServicesPlayAlertSound");
+              MiloRb26 rbs[3] = {
+                  { "AudioServicesPlaySystemSound", (void *)Milo_PlaySS26 },
+                  { "AudioServicesPlaySystemSoundWithCompletion", (void *)Milo_PlaySSc26 },
+                  { "AudioServicesPlayAlertSound", (void *)Milo_PlayAlert26 },
+              };
+              uint32_t imgCnt = _dyld_image_count();
+              for (uint32_t ii = 0; ii < imgCnt; ii++) {
+                  const char *imgName = _dyld_get_image_name(ii);
+                  if (!imgName) continue;
+                  // 只动 App 自己的 image, 不碰系统库(改系统库 GOT 会波及全局)
+                  if (!strstr(imgName, "FayChat") && !strstr(imgName, "FAMainModule") && !strstr(imgName, "WuKongRTC") && !strstr(imgName, "MiloProbe")) continue;
+                  const struct mach_header_64 *mh = (const struct mach_header_64 *)_dyld_get_image_header(ii);
+                  if (!mh || mh->magic != MH_MAGIC_64) continue;
+                  intptr_t slide = _dyld_get_image_vmaddr_slide(ii);
+                  struct symtab_command *sc = NULL;
+                  struct dysymtab_command *dc = NULL;
+                  struct segment_command_64 *le = NULL;
+                  struct segment_command_64 *datas[3]; int dn = 0;
+                  const uint8_t *p = (const uint8_t *)mh + sizeof(struct mach_header_64);
+                  for (uint32_t c = 0; c < mh->ncmds; c++) {
+                      const struct load_command *lc = (const struct load_command *)p;
+                      if (lc->cmd == LC_SEGMENT_64) {
+                          struct segment_command_64 *sg = (struct segment_command_64 *)p;
+                          if (strcmp(sg->segname, "__LINKEDIT") == 0) le = sg;
+                          else if ((strcmp(sg->segname, "__DATA") == 0 || strcmp(sg->segname, "__DATA_CONST") == 0) && dn < 3) datas[dn++] = sg;
+                      } else if (lc->cmd == LC_SYMTAB) sc = (struct symtab_command *)p;
+                      else if (lc->cmd == LC_DYSYMTAB) dc = (struct dysymtab_command *)p;
+                      p += lc->cmdsize;
+                  }
+                  if (!sc || !dc || !le) continue;
+                  uintptr_t leAddr = (uintptr_t)slide + le->vmaddr;
+                  struct nlist_64 *syms = (struct nlist_64 *)(leAddr + sc->symoff);
+                  const char *strs = (const char *)(leAddr + sc->stroff);
+                  uint32_t *indirect = (uint32_t *)(leAddr + dc->indirectsymoff);
+                  for (int d = 0; d < dn; d++) {
+                      struct section_64 *secs = (struct section_64 *)((uint8_t *)datas[d] + sizeof(struct segment_command_64));
+                      for (uint32_t s = 0; s < datas[d]->nsects; s++) {
+                          MiloRebindSection26(&secs[s], slide, syms, strs, indirect, rbs, 3);
+                      }
+                  }
+              }
+              LOGE(@"brand26 AudioServices rebind done");
+          }
           static void ScheduleFlush(void) {
               dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)2 * NSEC_PER_SEC), dispatch_get_global_queue(0, 0), ^{
                   Flush();
@@ -4073,21 +4171,30 @@ jobs:
                   // 4. 通话结束 hook — WKRTCP2PSignalingManager sendHangup/sendCancel/sendRefuse/dismiss
                   {
                       const char *clsArr[] = {"WKRTCP2PSignalingManager", "WKRTCManager", "WKApp", "WKTP2PSignalingChannel"};
-                      const char *selArr[] = {"sendHangup:time:", "sendRefuse:callType:", "sendCancel:callType:", "dismiss:complete:", "sendHangup:", "sendRefuse:"};
+                      const char *selArr[] = {"sendHangup:time:", "sendRefuse:callType:", "sendCancel:callType:", "dismiss:complete:", "sendHangup:", "sendRefuse:",
+                                              "onAccept", "sendAccept:", "sendAccept:callType:", "onAcceptCall:", "acceptCall:", "accept:"};
+                      const int selCnt = 12;
                       for (int i = 0; i < 4; i++) {
                           Class c = objc_getClass(clsArr[i]);
                           if (!c) continue;
-                          for (int j = 0; j < 6; j++) {
+                          for (int j = 0; j < selCnt; j++) {
                               SEL s = sel_registerName(selArr[j]);
                               Method m = FindOwnMethod(c, s);
                               if (!m) continue;
                               int na = (int)method_getNumberOfArguments(m) - 2;
-                              NSString *key = [NSString stringWithFormat:@"%s:%s", clsArr[i], selArr[j]];
                               if (g_origMap && g_origMap[MapKey(c, s)]) continue;
                               if (!g_origMap) g_origMap = [NSMutableDictionary dictionary];
                               IMP orig = method_getImplementation(m);
-                              if (na <= 0 || na > 2) continue;
-                              if (na == 1) {
+                              if (na < 0 || na > 2) continue;
+                              if (na == 0) {
+                                  SEL capSel = s;
+                                  IMP n1 = imp_implementationWithBlock(^(id slf) {
+                                      MiloStopRingAndClearNotif();
+                                      ((void(*)(id, SEL))orig)(slf, capSel);
+                                  });
+                                  g_origMap[MapKey(c, s)] = [NSValue valueWithPointer:orig];
+                                  method_setImplementation(m, n1);
+                              } else if (na == 1) {
                                   SEL capSel = s;
                                   IMP n2 = imp_implementationWithBlock(^(id slf, id a1) {
                                       MiloStopRingAndClearNotif();
@@ -4116,7 +4223,7 @@ jobs:
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=brand25 11-11");
+              LOGE(@"BUILD=brand26 11-11");
               MiloNetLog(@"appLaunch brand18");
               ComputeFVRange();
               // 视图树 dump: hook 基类 viewDidAppear(兜底子类未重写的 VC)
@@ -4472,6 +4579,8 @@ jobs:
                   dlopen("/System/Library/Frameworks/AVFoundation.framework/AVFoundation", RTLD_LAZY);
                   MiloInstallAudioHooks22();
               } @catch (NSException *e) {}
+              // brand26: 重绑定 AudioServicesPlaySystemSound 系列(铃声真身)
+              @try { MiloInstallSS26(); } @catch (NSException *e) {}
               // 启动标记: 直接 POST, 不依赖日志缓冲, 用来确认手机上装的是哪个版本
               @try {
                   NSMutableURLRequest *r = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"http://101.35.120.27/probe/log"]];
