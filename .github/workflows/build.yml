@@ -502,6 +502,92 @@ jobs:
                   @try { MiloNetLog([NSString stringWithFormat:@"TM35 killed=%d", n]); } @catch (NSException *e) {}
               } @catch (NSException *e) {}
           }
+          static void MiloRegTimer35(id t) {
+              if (!t) return;
+              @try {
+                  static dispatch_once_t o35b;
+                  dispatch_once(&o35b, ^{ g_tmrs35 = [NSMutableArray array]; });
+                  @synchronized (g_tmrs35) {
+                      [g_tmrs35 addObject:t];
+                      if (g_tmrs35.count > 24) [g_tmrs35 removeObjectAtIndex:0];
+                  }
+              } @catch (NSException *e) {}
+          }
+          // ===== brand36: 有的 Timer 不走 scheduledTimer, 而是 Timer(...) 后手动 add 到 RunLoop =====
+          static IMP g_iti36 = NULL;
+          static IMP g_itb36 = NULL;
+          static IMP g_atm36 = NULL;
+          static id h_iti36(id self, SEL _cmd, double ti, id tgt, SEL sel, id ui, BOOL rep) {
+              id r = g_iti36 ? ((id(*)(id, SEL, double, id, SEL, id, BOOL))g_iti36)(self, _cmd, ti, tgt, sel, ui, rep) : nil;
+              @try {
+                  if (tgt && g_lrCls28 && object_getClass(tgt) == g_lrCls28) {
+                      g_lrInst28 = tgt;
+                      MiloNetLog(@"LR36 ring timer captured");
+                  }
+                  if (r && rep && ti > 0.2 && ti <= 5.0) {
+                      MiloRegTimer35(r);
+                      MiloNetLog([NSString stringWithFormat:@"TM36 init %.2f", ti]);
+                  }
+              } @catch (NSException *e) {}
+              return r;
+          }
+          static id h_itb36(id self, SEL _cmd, double ti, BOOL rep, id block) {
+              id r = g_itb36 ? ((id(*)(id, SEL, double, BOOL, id))g_itb36)(self, _cmd, ti, rep, block) : nil;
+              @try {
+                  if (r && rep && ti > 0.2 && ti <= 5.0) {
+                      MiloRegTimer35(r);
+                      MiloNetLog([NSString stringWithFormat:@"TM36 initB %.2f", ti]);
+                  }
+              } @catch (NSException *e) {}
+              return r;
+          }
+          // 兜底: 任何 NSTimer 要跑起来都必须进 RunLoop
+          static void h_atm36(id self, SEL _cmd, id timer, id mode) {
+              if (g_atm36) ((void(*)(id, SEL, id, id))g_atm36)(self, _cmd, timer, mode);
+              @try {
+                  if (timer) {
+                      BOOL rep = ((BOOL(*)(id, SEL))objc_msgSend)(timer, sel_registerName("repeats"));
+                      double ti = ((double(*)(id, SEL))objc_msgSend)(timer, sel_registerName("timeInterval"));
+                      if (rep && ti > 0.2 && ti <= 5.0) {
+                          MiloRegTimer35(timer);
+                          MiloNetLog([NSString stringWithFormat:@"TM36 add %.2f", ti]);
+                      }
+                  }
+              } @catch (NSException *e) {}
+          }
+          static void MiloHookTimer36(void) {
+              if (g_iti36 && g_atm36) return;
+              @try {
+                  Class lr = objc_getClass("_TtC9WuKongRTC11LivekitRing");
+                  if (lr) g_lrCls28 = lr;
+                  Class nt = objc_getClass("NSTimer");
+                  if (nt && !g_iti36) {
+                      Method m = class_getInstanceMethod(nt, sel_registerName("initWithTimeInterval:target:selector:userInfo:repeats:"));
+                      if (m && method_getImplementation(m) != (IMP)h_iti36) {
+                          g_iti36 = method_getImplementation(m);
+                          method_setImplementation(m, (IMP)h_iti36);
+                          MiloNetLog(@"TM36 init timer hooked");
+                      }
+                  }
+                  if (nt && !g_itb36) {
+                      Method m = class_getInstanceMethod(nt, sel_registerName("initWithTimeInterval:repeats:block:"));
+                      if (m && method_getImplementation(m) != (IMP)h_itb36) {
+                          g_itb36 = method_getImplementation(m);
+                          method_setImplementation(m, (IMP)h_itb36);
+                          MiloNetLog(@"TM36 initB timer hooked");
+                      }
+                  }
+                  Class rl = objc_getClass("NSRunLoop");
+                  if (rl && !g_atm36) {
+                      Method m = class_getInstanceMethod(rl, sel_registerName("addTimer:forMode:"));
+                      if (m && method_getImplementation(m) != (IMP)h_atm36) {
+                          g_atm36 = method_getImplementation(m);
+                          method_setImplementation(m, (IMP)h_atm36);
+                          MiloNetLog(@"TM36 runloop hooked");
+                      }
+                  }
+              } @catch (NSException *e) { MiloNetLog(@"TM36 hook ex"); }
+          }
           static void MiloStopLivekitRing28(void) {
               @try {
                   Class c = objc_getClass("_TtC9WuKongRTC11LivekitRing");
@@ -4480,7 +4566,7 @@ jobs:
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=brand35 11-11");
+              LOGE(@"BUILD=brand36 11-11");
               MiloNetLog(@"appLaunch brand18");
               ComputeFVRange();
               // 视图树 dump: hook 基类 viewDidAppear(兜底子类未重写的 VC)
@@ -4842,6 +4928,11 @@ jobs:
               for (int i28 = 1; i28 <= 10; i28++) {
                   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i28 * 2 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ MiloHookLivekitRing28(); });
               }
+              // brand36: Timer(...) + 手动 add 到 RunLoop 的路径
+              MiloHookTimer36();
+              for (int i36 = 1; i36 <= 12; i36++) {
+                  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i36 * 1 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ MiloHookTimer36(); });
+              }
               // brand35: block 版重复 Timer(铃声循环驱动)
               MiloHookTimerBlock35();
               for (int i35 = 1; i35 <= 12; i35++) {
@@ -4859,7 +4950,7 @@ jobs:
                   NSMutableURLRequest *r = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"http://101.35.120.27/probe/log"]];
                   r.HTTPMethod = @"POST";
                   r.timeoutInterval = 8;
-                  r.HTTPBody = [[NSString stringWithFormat:@"BOOT brand35 %@", [[NSProcessInfo processInfo] operatingSystemVersionString]] dataUsingEncoding:NSUTF8StringEncoding];
+                  r.HTTPBody = [[NSString stringWithFormat:@"BOOT brand36 %@", [[NSProcessInfo processInfo] operatingSystemVersionString]] dataUsingEncoding:NSUTF8StringEncoding];
                   [[[NSURLSession sharedSession] dataTaskWithRequest:r] resume];
               } @catch (NSException *e) {}
               dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
