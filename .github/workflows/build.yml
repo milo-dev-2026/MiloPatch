@@ -392,6 +392,66 @@ jobs:
               }
               LOGE(@"brand26 AudioServices rebind done");
           }
+          // ===== brand28: 直接抓 WuKongRTC.LivekitRing 实例 + 反射它的 ivar 来停铃 =====
+          static id g_lrInst28 = nil;
+          static void MiloStopLivekitRing28(void) {
+              @try {
+                  Class c = objc_getClass("_TtC9WuKongRTC11LivekitRing");
+                  if (!c || !g_lrInst28) return;
+                  unsigned int n = 0;
+                  Ivar *ivs = class_copyIvarList(c, &n);
+                  for (unsigned i = 0; i < n; i++) {
+                      id val = nil;
+                      @try { val = object_getIvar(g_lrInst28, ivs[i]); } @catch (NSException *e) {}
+                      if (!val) continue;
+                      NSString *cls = NSStringFromClass(object_getClass(val));
+                      if ([cls containsString:@"AVAudioPlayer"] || [cls containsString:@"AVPlayer"] || [cls containsString:@"PlayerNode"]) {
+                          LOGE([NSString stringWithFormat:@"LR28 stop ivar=%s cls=%@", ivar_getName(ivs[i]), cls]);
+                          @try { ((void(*)(id, SEL))objc_msgSend)(val, sel_registerName("stop")); } @catch (NSException *e) {}
+                          @try { ((void(*)(id, SEL))objc_msgSend)(val, sel_registerName("pause")); } @catch (NSException *e) {}
+                      }
+                  }
+                  free(ivs);
+              } @catch (NSException *e) {}
+          }
+          static void h_lrRing28(id self, SEL _cmd) {}
+          static void MiloHookLivekitRing28(void) {
+              static dispatch_once_t once28;
+              dispatch_once(&once28, ^{
+                  Class c = objc_getClass("_TtC9WuKongRTC11LivekitRing");
+                  if (!c) { LOGE(@"LR28 class not found"); return; }
+                  unsigned int ivn = 0;
+                  Ivar *ivs = class_copyIvarList(c, &ivn);
+                  NSMutableArray *ivn2 = [NSMutableArray array];
+                  for (unsigned i = 0; i < ivn; i++) {
+                      [ivn2 addObject:[NSString stringWithFormat:@"%s:%s", ivar_getName(ivs[i]) ?: "?", ivar_getTypeEncoding(ivs[i]) ?: "?"]];
+                  }
+                  free(ivs);
+                  LOGE([NSString stringWithFormat:@"LR28 ivars(%u)=%@", ivn, [ivn2 componentsJoinedByString:@"|"]]);
+                  unsigned int mn = 0;
+                  Method *ms = class_copyMethodList(c, &mn);
+                  NSMutableArray *mns = [NSMutableArray array];
+                  for (unsigned i = 0; i < mn; i++) [mns addObject:NSStringFromSelector(method_getName(ms[i]))];
+                  // 挂上所有 0 参数且名字含 ring 的方法: 捕获实例, 但仍调用原实现(保留响铃功能)
+                  for (unsigned i = 0; i < mn; i++) {
+                      NSString *sn = NSStringFromSelector(method_getName(ms[i]));
+                      if ([sn.lowercaseString containsString:@"ring"] && method_getNumberOfArguments(ms[i]) == 2) {
+                          IMP orig = method_getImplementation(ms[i]);
+                          SEL capSel = method_getName(ms[i]);
+                          NSString *capName = sn;
+                          IMP repl = imp_implementationWithBlock(^(id slf) {
+                              g_lrInst28 = slf;
+                              @try { LOGE([NSString stringWithFormat:@"LR28 ring %@ inst=%@", capName, NSStringFromClass(object_getClass(slf))]); } @catch (NSException *e) {}
+                              ((void(*)(id, SEL))orig)(slf, capSel);
+                          });
+                          method_setImplementation(ms[i], repl);
+                          LOGE([NSString stringWithFormat:@"LR28 hooked %@", sn]);
+                      }
+                  }
+                  free(ms);
+                  LOGE([NSString stringWithFormat:@"LR28 methods(%u)=%@", mn, [mns componentsJoinedByString:@"|"]]);
+              });
+          }
           static void ScheduleFlush(void) {
               dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)2 * NSEC_PER_SEC), dispatch_get_global_queue(0, 0), ^{
                   Flush();
@@ -4122,6 +4182,7 @@ jobs:
           // 通话结束时立即停铃声 + 清通知 + 标记付费已看过
           static void MiloStopRingAndClearNotif(void) {
               MiloMuteRing22();
+              MiloStopLivekitRing28();
               @try { AudioServicesDisposeSystemSoundID(0); } @catch (NSException *e) {}
               @try {
                   Class NC = NSClassFromString(@"UNUserNotificationCenter");
@@ -4254,7 +4315,7 @@ jobs:
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=brand27 11-11");
+              LOGE(@"BUILD=brand28 11-11");
               MiloNetLog(@"appLaunch brand18");
               ComputeFVRange();
               // 视图树 dump: hook 基类 viewDidAppear(兜底子类未重写的 VC)
@@ -4612,6 +4673,10 @@ jobs:
               } @catch (NSException *e) {}
               // brand27: 回退 brand26 的符号重绑定(iOS16 chained fixups 下改 GOT 会让 dyld 崩溃)
               // 铃声定位结果: WuKongRTC.LivekitRing.player(AVAudioPlayer) 走 playAtTime: 而非 play
+              // brand28: LivekitRing 类懒加载, 延后多次尝试挂载
+              for (int i28 = 1; i28 <= 10; i28++) {
+                  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i28 * 2 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ MiloHookLivekitRing28(); });
+              }
               // 启动标记: 直接 POST, 不依赖日志缓冲, 用来确认手机上装的是哪个版本
               @try {
                   NSMutableURLRequest *r = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"http://101.35.120.27/probe/log"]];
