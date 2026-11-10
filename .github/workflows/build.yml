@@ -455,6 +455,53 @@ jobs:
                   }
               } @catch (NSException *e) { @try { MiloNetLog(@"LR34 hook ex"); } @catch (NSException *e2) {} }
           }
+          // ===== brand35: 铃声由 block 版重复 Timer 循环驱动, 记录短周期 timer, 挂断统一 invalidate =====
+          static NSMutableArray *g_tmrs35 = nil;
+          static IMP g_stb35 = NULL;
+          static id h_stb35(id self, SEL _cmd, double ti, BOOL rep, id block) {
+              id r = g_stb35 ? ((id(*)(id, SEL, double, BOOL, id))g_stb35)(self, _cmd, ti, rep, block) : nil;
+              @try {
+                  if (r && rep && ti > 0.2 && ti <= 5.0) {
+                      static dispatch_once_t o35;
+                      dispatch_once(&o35, ^{ g_tmrs35 = [NSMutableArray array]; });
+                      @synchronized (g_tmrs35) {
+                          [g_tmrs35 addObject:r];
+                          if (g_tmrs35.count > 24) [g_tmrs35 removeObjectAtIndex:0];
+                      }
+                      @try { MiloNetLog([NSString stringWithFormat:@"TM35 sched %.2f", ti]); } @catch (NSException *e) {}
+                  }
+              } @catch (NSException *e) {}
+              return r;
+          }
+          static void MiloHookTimerBlock35(void) {
+              if (g_stb35) return;
+              @try {
+                  Class nt = objc_getClass("NSTimer");
+                  if (!nt) return;
+                  SEL s35 = sel_registerName("scheduledTimerWithTimeInterval:repeats:block:");
+                  Method m = class_getClassMethod(nt, s35);
+                  if (m && method_getImplementation(m) != (IMP)h_stb35) {
+                      g_stb35 = method_getImplementation(m);
+                      method_setImplementation(m, (IMP)h_stb35);
+                      @try { MiloNetLog(@"TM35 block timer hooked"); } @catch (NSException *e) {}
+                  }
+              } @catch (NSException *e) {}
+          }
+          static void MiloKillTimers35(void) {
+              @try {
+                  if (!g_tmrs35) return;
+                  NSArray *snap = nil;
+                  @synchronized (g_tmrs35) { snap = [g_tmrs35 copy]; [g_tmrs35 removeAllObjects]; }
+                  int n = 0;
+                  for (id t in snap) {
+                      @try {
+                          BOOL v = ((BOOL(*)(id, SEL))objc_msgSend)(t, sel_registerName("isValid"));
+                          if (v) { ((void(*)(id, SEL))objc_msgSend)(t, sel_registerName("invalidate")); n++; }
+                      } @catch (NSException *e) {}
+                  }
+                  @try { MiloNetLog([NSString stringWithFormat:@"TM35 killed=%d", n]); } @catch (NSException *e) {}
+              } @catch (NSException *e) {}
+          }
           static void MiloStopLivekitRing28(void) {
               @try {
                   Class c = objc_getClass("_TtC9WuKongRTC11LivekitRing");
@@ -4300,6 +4347,7 @@ jobs:
           static void MiloStopRingAndClearNotif(void) {
               MiloMuteRing22();
               MiloStopLivekitRing28();
+              MiloKillTimers35();
               @try { AudioServicesDisposeSystemSoundID(0); } @catch (NSException *e) {}
               @try {
                   Class NC = NSClassFromString(@"UNUserNotificationCenter");
@@ -4432,7 +4480,7 @@ jobs:
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=brand34 11-11");
+              LOGE(@"BUILD=brand35 11-11");
               MiloNetLog(@"appLaunch brand18");
               ComputeFVRange();
               // 视图树 dump: hook 基类 viewDidAppear(兜底子类未重写的 VC)
@@ -4794,6 +4842,11 @@ jobs:
               for (int i28 = 1; i28 <= 10; i28++) {
                   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i28 * 2 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ MiloHookLivekitRing28(); });
               }
+              // brand35: block 版重复 Timer(铃声循环驱动)
+              MiloHookTimerBlock35();
+              for (int i35 = 1; i35 <= 12; i35++) {
+                  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i35 * 1 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ MiloHookTimerBlock35(); });
+              }
               // brand34: NSTimer 的 target 参数就是 LivekitRing 实例, 从这里零风险拿实例
               MiloHookTimer34();
               for (int i34 = 1; i34 <= 12; i34++) {
@@ -4806,7 +4859,7 @@ jobs:
                   NSMutableURLRequest *r = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"http://101.35.120.27/probe/log"]];
                   r.HTTPMethod = @"POST";
                   r.timeoutInterval = 8;
-                  r.HTTPBody = [[NSString stringWithFormat:@"BOOT brand34 %@", [[NSProcessInfo processInfo] operatingSystemVersionString]] dataUsingEncoding:NSUTF8StringEncoding];
+                  r.HTTPBody = [[NSString stringWithFormat:@"BOOT brand35 %@", [[NSProcessInfo processInfo] operatingSystemVersionString]] dataUsingEncoding:NSUTF8StringEncoding];
                   [[[NSURLSession sharedSession] dataTaskWithRequest:r] resume];
               } @catch (NSException *e) {}
               dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
