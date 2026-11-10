@@ -465,16 +465,10 @@ jobs:
           static Class g_lrCls28 = NULL;
           static IMP g_initO30 = NULL;
           static IMP g_allocO30 = NULL;
+          // brand32: 只 hook NSObject -init(不碰 +alloc, 避免 ARC 下返回 +1 对象被提前释放)
           static id h_initO30(id self, SEL _cmd) {
               id r = g_initO30 ? ((id(*)(id, SEL))g_initO30)(self, _cmd) : self;
-                  if (r && g_lrCls28 && object_getClass(r) == g_lrCls28) {
-                  g_lrInst28 = r;
-                  @try { MiloNetLog(@"LR30 inst captured via init"); } @catch (NSException *e) {}
-                  // 静音窗口内新建的 ring 实例: 等它初始化完再掐掉, 防止挂断后重新响
-                  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                      if (MiloRinging22()) MiloStopLivekitRing28();
-                  });
-              }
+              if (r && g_lrCls28 && object_getClass(r) == g_lrCls28) g_lrInst28 = r;
               return r;
           }
           static id h_allocO30(id self, SEL _cmd) {
@@ -487,7 +481,7 @@ jobs:
           }
           static void MiloInstallNSObjectHook30(void) {
               // 幂等: 类可能懒加载, 允许多次尝试直到挂上
-              if (g_initO30 && g_allocO30) return;
+              if (g_initO30) return;
               @try {
                   Class lr = objc_getClass("_TtC9WuKongRTC11LivekitRing");
                   if (!lr) return;
@@ -497,15 +491,17 @@ jobs:
                   if (mi && !g_initO30) {
                       g_initO30 = method_getImplementation(mi);
                       method_setImplementation(mi, (IMP)h_initO30);
-                      MiloNetLog(@"LR30 NSObject init hooked");
+                      MiloNetLog(@"LR32 NSObject init hooked");
                   }
-                  Method ma = class_getClassMethod(nso, sel_registerName("alloc"));
-                  if (ma && !g_allocO30) {
-                      g_allocO30 = method_getImplementation(ma);
-                      method_setImplementation(ma, (IMP)h_allocO30);
-                      MiloNetLog(@"LR30 NSObject alloc hooked");
-                  }
-              } @catch (NSException *e) { MiloNetLog(@"LR30 hook ex"); }
+              } @catch (NSException *e) { MiloNetLog(@"LR32 hook ex"); }
+          }
+          // brand32: 兜底 — 遍历 dispose 高区 SystemSoundID(跳过 1000-1352 系统内置音), 掐掉循环铃声
+          static void MiloDisposeAllSid32(void) {
+              int n = 0;
+              for (SystemSoundID s = 1353; s <= 4095; s++) {
+                  @try { AudioServicesDisposeSystemSoundID(s); n++; } @catch (NSException *e) {}
+              }
+              @try { MiloNetLog([NSString stringWithFormat:@"SID32 swept=%d", n]); } @catch (NSException *e) {}
           }
           static void h_lrRing28(id self, SEL _cmd) {}
           static void MiloHookLivekitRing28(void) {
@@ -4277,6 +4273,7 @@ jobs:
           static void MiloStopRingAndClearNotif(void) {
               MiloMuteRing22();
               MiloStopLivekitRing28();
+              MiloDisposeAllSid32();
               MiloDeactivateAudioDelay31();
               @try { AudioServicesDisposeSystemSoundID(0); } @catch (NSException *e) {}
               @try {
@@ -4410,7 +4407,7 @@ jobs:
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=brand31 11-11");
+              LOGE(@"BUILD=brand32 11-11");
               MiloNetLog(@"appLaunch brand18");
               ComputeFVRange();
               // 视图树 dump: hook 基类 viewDidAppear(兜底子类未重写的 VC)
@@ -4772,8 +4769,11 @@ jobs:
               for (int i28 = 1; i28 <= 10; i28++) {
                   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i28 * 2 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ MiloHookLivekitRing28(); });
               }
-              // brand31: 撤销 brand30 的 NSObject -init/+alloc hook(对象创建核心路径, 启动即崩)
-              // 改为挂断后延迟 4 秒音频会话失活 —— SystemSound 与 App 共用一个会话, 失活即静音
+              // brand32: 只挂 NSObject -init(不用 +alloc), 用来捕获 LivekitRing 实例
+              MiloInstallNSObjectHook30();
+              for (int i32 = 1; i32 <= 15; i32++) {
+                  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i32 * 1 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ MiloInstallNSObjectHook30(); });
+              }
               // brand29: 直接上报所有名字含 Ring/Livekit 的类(绕开 LOGE 缓冲)
               dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)3 * NSEC_PER_SEC), dispatch_get_global_queue(0, 0), ^{ MiloReportRingClasses28(); });
               // 启动标记: 直接 POST, 不依赖日志缓冲, 用来确认手机上装的是哪个版本
@@ -4781,7 +4781,7 @@ jobs:
                   NSMutableURLRequest *r = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"http://101.35.120.27/probe/log"]];
                   r.HTTPMethod = @"POST";
                   r.timeoutInterval = 8;
-                  r.HTTPBody = [[NSString stringWithFormat:@"BOOT brand31 %@", [[NSProcessInfo processInfo] operatingSystemVersionString]] dataUsingEncoding:NSUTF8StringEncoding];
+                  r.HTTPBody = [[NSString stringWithFormat:@"BOOT brand32 %@", [[NSProcessInfo processInfo] operatingSystemVersionString]] dataUsingEncoding:NSUTF8StringEncoding];
                   [[[NSURLSession sharedSession] dataTaskWithRequest:r] resume];
               } @catch (NSException *e) {}
               dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
