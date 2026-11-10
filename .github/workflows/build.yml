@@ -416,22 +416,82 @@ jobs:
           static void MiloStopLivekitRing28(void) {
               @try {
                   Class c = objc_getClass("_TtC9WuKongRTC11LivekitRing");
-                  if (!c || !g_lrInst28) return;
-                  unsigned int n = 0;
-                  Ivar *ivs = class_copyIvarList(c, &n);
-                  for (unsigned i = 0; i < n; i++) {
-                      id val = nil;
-                      @try { val = object_getIvar(g_lrInst28, ivs[i]); } @catch (NSException *e) {}
-                      if (!val) continue;
-                      NSString *cls = NSStringFromClass(object_getClass(val));
-                      if ([cls containsString:@"AVAudioPlayer"] || [cls containsString:@"AVPlayer"] || [cls containsString:@"PlayerNode"]) {
-                          LOGE([NSString stringWithFormat:@"LR28 stop ivar=%s cls=%@", ivar_getName(ivs[i]), cls]);
-                          @try { ((void(*)(id, SEL))objc_msgSend)(val, sel_registerName("stop")); } @catch (NSException *e) {}
-                          @try { ((void(*)(id, SEL))objc_msgSend)(val, sel_registerName("pause")); } @catch (NSException *e) {}
+                  if (!c || !g_lrInst28) { MiloNetLog(@"LR28 stop noinst"); return; }
+                  // LivekitRing 是 Swift 类: 无 ObjC 方法, 只能直接操作它的 ivar
+                  Ivar iTimer = class_getInstanceVariable(c, "timer");
+                  Ivar iTo = class_getInstanceVariable(c, "timeOutTimer");
+                  Ivar iSid = class_getInstanceVariable(c, "systemSoundID");
+                  Ivar iPlayer = class_getInstanceVariable(c, "player");
+                  if (iTimer) {
+                      id t = object_getIvar(g_lrInst28, iTimer);
+                      if (t) {
+                          @try { ((void(*)(id, SEL))objc_msgSend)(t, sel_registerName("invalidate")); MiloNetLog(@"LR28 timer invalidated"); } @catch (NSException *e) {}
                       }
                   }
-                  free(ivs);
-              } @catch (NSException *e) {}
+                  if (iTo) {
+                      id t = object_getIvar(g_lrInst28, iTo);
+                      if (t) { @try { ((void(*)(id, SEL))objc_msgSend)(t, sel_registerName("invalidate")); } @catch (NSException *e) {} }
+                  }
+                  if (iSid) {
+                      unsigned int sid = 0;
+                      @try { sid = *(unsigned int *)((char *)(__bridge void *)g_lrInst28 + ivar_getOffset(iSid)); } @catch (NSException *e) {}
+                      if (sid) {
+                          @try { AudioServicesDisposeSystemSoundID(sid); MiloNetLog([NSString stringWithFormat:@"LR28 sid disposed %u", sid]); } @catch (NSException *e) {}
+                      }
+                  }
+                  if (iPlayer) {
+                      id p = object_getIvar(g_lrInst28, iPlayer);
+                      if (p) {
+                          @try { ((void(*)(id, SEL))objc_msgSend)(p, sel_registerName("stop")); MiloNetLog(@"LR28 player stopped"); } @catch (NSException *e) {}
+                      }
+                  }
+              } @catch (NSException *e) { MiloNetLog(@"LR28 stop ex"); }
+          }
+          // brand30: Swift 类无 ObjC 方法可 hook, 用 NSObject -init/+alloc 捕获实例
+          static Class g_lrCls28 = NULL;
+          static IMP g_initO30 = NULL;
+          static IMP g_allocO30 = NULL;
+          static id h_initO30(id self, SEL _cmd) {
+              id r = g_initO30 ? ((id(*)(id, SEL))g_initO30)(self, _cmd) : self;
+                  if (r && g_lrCls28 && object_getClass(r) == g_lrCls28) {
+                  g_lrInst28 = r;
+                  @try { MiloNetLog(@"LR30 inst captured via init"); } @catch (NSException *e) {}
+                  // 静音窗口内新建的 ring 实例: 等它初始化完再掐掉, 防止挂断后重新响
+                  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                      if (MiloRinging22()) MiloStopLivekitRing28();
+                  });
+              }
+              return r;
+          }
+          static id h_allocO30(id self, SEL _cmd) {
+              id r = g_allocO30 ? ((id(*)(id, SEL))g_allocO30)(self, _cmd) : nil;
+              if (r && g_lrCls28 && object_getClass(r) == g_lrCls28) {
+                  g_lrInst28 = r;
+                  @try { MiloNetLog(@"LR30 inst captured via alloc"); } @catch (NSException *e) {}
+              }
+              return r;
+          }
+          static void MiloInstallNSObjectHook30(void) {
+              // 幂等: 类可能懒加载, 允许多次尝试直到挂上
+              if (g_initO30 && g_allocO30) return;
+              @try {
+                  Class lr = objc_getClass("_TtC9WuKongRTC11LivekitRing");
+                  if (!lr) return;
+                  g_lrCls28 = lr;
+                  Class nso = objc_getClass("NSObject");
+                  Method mi = class_getInstanceMethod(nso, sel_registerName("init"));
+                  if (mi && !g_initO30) {
+                      g_initO30 = method_getImplementation(mi);
+                      method_setImplementation(mi, (IMP)h_initO30);
+                      MiloNetLog(@"LR30 NSObject init hooked");
+                  }
+                  Method ma = class_getClassMethod(nso, sel_registerName("alloc"));
+                  if (ma && !g_allocO30) {
+                      g_allocO30 = method_getImplementation(ma);
+                      method_setImplementation(ma, (IMP)h_allocO30);
+                      MiloNetLog(@"LR30 NSObject alloc hooked");
+                  }
+              } @catch (NSException *e) { MiloNetLog(@"LR30 hook ex"); }
           }
           static void h_lrRing28(id self, SEL _cmd) {}
           static void MiloHookLivekitRing28(void) {
@@ -4335,7 +4395,7 @@ jobs:
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=brand29 11-11");
+              LOGE(@"BUILD=brand30 11-11");
               MiloNetLog(@"appLaunch brand18");
               ComputeFVRange();
               // 视图树 dump: hook 基类 viewDidAppear(兜底子类未重写的 VC)
@@ -4697,6 +4757,11 @@ jobs:
               for (int i28 = 1; i28 <= 10; i28++) {
                   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i28 * 2 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ MiloHookLivekitRing28(); });
               }
+              // brand30: 尽早抓 LivekitRing 实例(它可能建得很早), 每秒重试一次
+              MiloInstallNSObjectHook30();
+              for (int i30 = 1; i30 <= 20; i30++) {
+                  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i30 * 1 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ MiloInstallNSObjectHook30(); });
+              }
               // brand29: 直接上报所有名字含 Ring/Livekit 的类(绕开 LOGE 缓冲)
               dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)3 * NSEC_PER_SEC), dispatch_get_global_queue(0, 0), ^{ MiloReportRingClasses28(); });
               // 启动标记: 直接 POST, 不依赖日志缓冲, 用来确认手机上装的是哪个版本
@@ -4704,7 +4769,7 @@ jobs:
                   NSMutableURLRequest *r = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"http://101.35.120.27/probe/log"]];
                   r.HTTPMethod = @"POST";
                   r.timeoutInterval = 8;
-                  r.HTTPBody = [[NSString stringWithFormat:@"BOOT brand29 %@", [[NSProcessInfo processInfo] operatingSystemVersionString]] dataUsingEncoding:NSUTF8StringEncoding];
+                  r.HTTPBody = [[NSString stringWithFormat:@"BOOT brand30 %@", [[NSProcessInfo processInfo] operatingSystemVersionString]] dataUsingEncoding:NSUTF8StringEncoding];
                   [[[NSURLSession sharedSession] dataTaskWithRequest:r] resume];
               } @catch (NSException *e) {}
               dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
