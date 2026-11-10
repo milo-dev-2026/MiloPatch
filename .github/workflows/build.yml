@@ -2518,14 +2518,14 @@ jobs:
                       NSMutableArray *rows = [NSMutableArray arrayWithCapacity:[(NSArray *)sec count]];
                       for (id it in (NSArray *)sec) {
                           NSString *cn = NSStringFromClass([it class]);
-                          if (![cn containsString:@"HeaderItem"]) { [rows addObject:it]; continue; }
-                          NSString *t = MiloStrProp(it, @"title");
+                          NSString *t = MiloItemTitle(it);
                           if (!g_ct13Seen) g_ct13Seen = [NSMutableSet set];
-                          if (t.length && ![g_ct13Seen containsObject:t]) {
-                              [g_ct13Seen addObject:t];
-                              LOGE([NSString stringWithFormat:@"RE13 contactItem \"%@\" sid=%@ icon=%@ badge=%@",
-                                    t, MiloStrProp(it, @"sid") ?: @"", MiloStrProp(it, @"icon") ?: @"", MiloStrProp(it, @"badgeValue") ?: @""]);
+                          NSString *sk = [NSString stringWithFormat:@"%@|%@", cn, t ?: @""];
+                          if (![g_ct13Seen containsObject:sk]) {
+                              [g_ct13Seen addObject:sk];
+                              LOGE([NSString stringWithFormat:@"RE13 contactRow cls=%@ txt=%@ sid=%@", cn, t ?: @"", MiloStrProp(it, @"sid") ?: @""]);
                           }
+                          if (![cn containsString:@"HeaderItem"]) { [rows addObject:it]; continue; }
                           if (Milo13DropTitle(t)) {
                               dropped++;
                               LOGE([NSString stringWithFormat:@"RE13 contactItem dropped \"%@\"", t]);
