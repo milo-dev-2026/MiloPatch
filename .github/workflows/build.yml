@@ -1589,6 +1589,31 @@ jobs:
               return v;
           }
 
+          // ===== brand10: 第二批需求 =====
+          static NSMutableSet *g_vc10Seen = nil;
+          static NSMutableSet *g_imgLogSeen = nil;
+          static NSMutableSet *g_win10Seen = nil;
+          static int g_vc10Count = 0;
+          static UIImage *MiloLogoSquareImg(void);
+          static void LogImgName(NSString *n) {
+              @try {
+                  if (![n isKindOfClass:[NSString class]] || !n.length) return;
+                  if (!g_imgLogSeen) g_imgLogSeen = [NSMutableSet set];
+                  if (g_imgLogSeen.count > 150) return;
+                  if ([g_imgLogSeen containsObject:n]) return;
+                  NSString *low = [n lowercaseString];
+                  if (!([low containsString:@"logo"] || [low containsString:@"icon"] || [low containsString:@"about"] ||
+                        [low containsString:@"verify"] || [low containsString:@"auth"] || [low containsString:@"badge"] ||
+                        [low containsString:@"vip"] || [low containsString:@"tag"] || [low containsString:@"label"])) return;
+                  [g_imgLogSeen addObject:n];
+                  LOGE([NSString stringWithFormat:@"IMGSRC %@", n]);
+              } @catch (NSException *e) {}
+          }
+          static void LabelPostProcess(UILabel *l, NSString *text);
+          static BOOL VC10Interesting(NSString *cls);
+          static void MaybeDumpVC10(id vc, NSString *cls);
+          static void HookTFDelegate(void);
+
           // ===== 品牌化补丁: bundle id / 高德 key / utalk 文案 / 登录logo =====
           static IMP g_biOrig = NULL;
           static id h_bundleId(id self, SEL _cmd) {
@@ -1623,6 +1648,7 @@ jobs:
                   }
               } @catch (NSException *e) {}
               ((void(*)(id, SEL, id))g_lblOrig)(self, _cmd, text);
+              LabelPostProcess((UILabel *)self, [text isKindOfClass:[NSString class]] ? (NSString *)text : nil);
           }
           static IMP g_amapKeyOrig = NULL;
           static void h_amapSetKey(id self, SEL _cmd, id key) {
@@ -1632,6 +1658,13 @@ jobs:
           static IMP g_imgNamedOrig = NULL;
           static id h_imgNamed(id self, SEL _cmd, id name) {
               @try {
+                  if ([name isKindOfClass:[NSString class]]) {
+                      LogImgName((NSString *)name);
+                      if ([[(NSString *)name lowercaseString] containsString:@"about"]) {
+                          UIImage *sq = MiloLogoSquareImg();
+                          if (sq) { LOGE([NSString stringWithFormat:@"about logo -> square (%@)", name]); return sq; }
+                      }
+                  }
                   if ([name isKindOfClass:[NSString class]] &&
                       [[(NSString *)name lowercaseString] containsString:@"welcom"]) {
                       NSString *p = [[NSBundle mainBundle] pathForResource:@"milo_logo" ofType:@"png"];
@@ -1874,6 +1907,249 @@ jobs:
                   }
               } @catch (NSException *e) {}
           }
+          // ===== brand10: 页面结构/输入框/数据 全量采集 + 第二批修复 =====
+          static NSString *ObjBrief(id v, NSUInteger maxLen) {
+              if (!v) return @"nil";
+              @try {
+                  if ([v isKindOfClass:[NSString class]]) {
+                      NSString *s = (NSString *)v;
+                      return [NSString stringWithFormat:@"\"%@\"", s.length > maxLen ? [s substringToIndex:maxLen] : s];
+                  }
+                  if ([v isKindOfClass:[NSNumber class]]) return [v description];
+                  return NSStringFromClass([v class]);
+              } @catch (NSException *e) { return @"?"; }
+          }
+          static NSString *IvarDumpString(id obj) {
+              NSMutableString *sb = [NSMutableString string];
+              @try {
+                  const char *base = (const char *)(__bridge void *)obj;
+                  Class k = [obj class];
+                  int guard = 0;
+                  while (k && k != [NSObject class] && guard++ < 8) {
+                      unsigned int ic = 0;
+                      Ivar *ivs = class_copyIvarList(k, &ic);
+                      for (unsigned int i = 0; i < ic && sb.length < 5000; i++) {
+                          const char *nm = ivar_getName(ivs[i]);
+                          const char *te = ivar_getTypeEncoding(ivs[i]);
+                          if (!nm || !te) continue;
+                          ptrdiff_t off = ivar_getOffset(ivs[i]);
+                          if (te[0] == '@') {
+                              id v = object_getIvar(obj, ivs[i]);
+                              if (!v) continue;
+                              if ([v isKindOfClass:[NSArray class]] && [(NSArray *)v count] <= 20) {
+                                  NSMutableString *b = [NSMutableString stringWithFormat:@"%@[", NSStringFromClass([v class])];
+                                  for (id it in (NSArray *)v) [b appendFormat:@"%@,", NSStringFromClass([it class])];
+                                  [b appendString:@"]"];
+                                  [sb appendFormat:@"%s=%@ ", nm, b];
+                              } else if ([v isKindOfClass:[NSDictionary class]] && [(NSDictionary *)v count] <= 10) {
+                                  [sb appendFormat:@"%s=%@ ", nm, ObjBrief([(NSDictionary *)v description], 160)];
+                              } else {
+                                  [sb appendFormat:@"%s=%@ ", nm, ObjBrief(v, 40)];
+                              }
+                          } else {
+                              long long n = 0;
+                              switch (te[0]) {
+                                  case 'q': n = *(long long *)(base + off); break;
+                                  case 'Q': n = (long long)*(unsigned long long *)(base + off); break;
+                                  case 'i': n = *(int *)(base + off); break;
+                                  case 'I': n = *(unsigned int *)(base + off); break;
+                                  case 's': n = *(short *)(base + off); break;
+                                  case 'S': n = (long long)*(unsigned short *)(base + off); break;
+                                  case 'c': n = *(char *)(base + off); break;
+                                  case 'B': n = *(signed char *)(base + off) ? 1 : 0; break;
+                                  default: continue;
+                              }
+                              NSString *low = [[NSString stringWithUTF8String:nm] lowercaseString];
+                              if ([low containsString:@"len"] || [low containsString:@"max"] || [low containsString:@"num"] ||
+                                  [low containsString:@"digit"] || [low containsString:@"count"] || [low containsString:@"size"] ||
+                                  [low containsString:@"limit"]) {
+                                  [sb appendFormat:@"%s=%lld ", nm, n];
+                              }
+                          }
+                      }
+                      if (ivs) free(ivs);
+                      k = class_getSuperclass(k);
+                  }
+              } @catch (NSException *e) {}
+              return sb;
+          }
+          static void LogTextFields(UIView *root) {
+              @try {
+                  NSMutableArray *stack = [NSMutableArray arrayWithObject:root];
+                  int n = 0;
+                  while (stack.count && n < 10) {
+                      UIView *v = [stack lastObject]; [stack removeLastObject];
+                      if ([v isKindOfClass:[UITextField class]]) {
+                          n++;
+                          UITextField *tf = (UITextField *)v;
+                          NSString *del = tf.delegate ? NSStringFromClass([tf.delegate class]) : @"nil";
+                          LOGE([NSString stringWithFormat:@"TF10#%d %@ frame=[%d,%d %dx%d] ph=\"%@\" txt=\"%@\" kb=%ld del=%@ | %@",
+                                n, NSStringFromClass([tf class]),
+                                (int)tf.frame.origin.x, (int)tf.frame.origin.y, (int)tf.frame.size.width, (int)tf.frame.size.height,
+                                tf.placeholder ?: @"", tf.text ?: @"", (long)tf.keyboardType, del, IvarDumpString(tf)]);
+                      }
+                      for (UIView *sv in v.subviews) [stack addObject:sv];
+                  }
+              } @catch (NSException *e) {}
+          }
+          static BOOL VC10Interesting(NSString *cls) {
+              if (!cls.length) return NO;
+              if ([cls hasPrefix:@"UI"] || [cls hasPrefix:@"_UI"] || [cls hasPrefix:@"NS"]) return NO;
+              NSArray *kw = @[@"WK", @"Chat", @"Contact", @"Setting", @"About", @"Login", @"Code", @"Verify", @"Auth",
+                              @"Panel", @"Mine", @"Session", @"Conversation", @"Friend", @"Group", @"Profile",
+                              @"Search", @"Location", @"More"];
+              for (NSString *k in kw) if ([cls containsString:k]) return YES;
+              return NO;
+          }
+          static void MaybeDumpVC10(id vc, NSString *cls) {
+              @try {
+                  if (!g_vc10Seen) g_vc10Seen = [NSMutableSet set];
+                  if ([g_vc10Seen containsObject:cls]) return;
+                  if (g_vc10Count >= 14) return;
+                  [g_vc10Seen addObject:cls];
+                  g_vc10Count++;
+                  LOGE([NSString stringWithFormat:@"VC10 seen %@ (#%d)", cls, g_vc10Count]);
+                  void (^blk)(void) = ^{
+                      @try {
+                          NSMutableString *out = [NSMutableString stringWithFormat:@"\n===== VC10 %@ =====\n", cls];
+                          UIView *vv = [vc valueForKey:@"view"];
+                          if (vv) DumpView(vv, 0, out);
+                          [out appendString:@"--- ivars ---\n"];
+                          [out appendString:IvarDumpString(vc)];
+                          LOGE(out);
+                          if (vv) LogTextFields(vv);
+                      } @catch (NSException *e) {}
+                  };
+                  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), blk);
+              } @catch (NSException *e) {}
+          }
+          static void HideAncestorOfLabel(UILabel *l, NSString *why) {
+              @try {
+                  UIView *p = l;
+                  NSMutableString *chain = [NSMutableString string];
+                  for (int i = 0; i < 7 && p.superview; i++) {
+                      p = p.superview;
+                      [chain appendFormat:@" %@[%d,%d %dx%d]", NSStringFromClass([p class]),
+                          (int)p.frame.origin.x, (int)p.frame.origin.y, (int)p.frame.size.width, (int)p.frame.size.height];
+                      BOOL isCell = [p isKindOfClass:[UITableViewCell class]] || [p isKindOfClass:[UICollectionViewCell class]];
+                      BOOL rowLike = (p.frame.size.width > 240 && p.frame.size.height >= 30 && p.frame.size.height <= 96);
+                      BOOL tileLike = (p.frame.size.width >= 56 && p.frame.size.width <= 150 && p.frame.size.height >= 40 && p.frame.size.height <= 120);
+                      if (isCell || rowLike || tileLike) {
+                          p.hidden = YES;
+                          p.alpha = 0;
+                          LOGE([NSString stringWithFormat:@"HIT10 hide(%@) at %@ chain:%@", why, NSStringFromClass([p class]), chain]);
+                          return;
+                      }
+                  }
+                  LOGE([NSString stringWithFormat:@"HIT10 nohide(%@) chain:%@", why, chain]);
+              } @catch (NSException *e) {}
+          }
+          static char kMiloHideKey;
+          static void LabelPostProcess(UILabel *l, NSString *text) {
+              @try {
+                  if (![l isKindOfClass:[UILabel class]]) return;
+                  BOOL wasOurs = [objc_getAssociatedObject(l, &kMiloHideKey) boolValue];
+                  if ([text isEqualToString:@"未认证"]) {
+                      if (!wasOurs) {
+                          objc_setAssociatedObject(l, &kMiloHideKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                          l.hidden = YES;
+                          UIView *p = l.superview;
+                          if (p && p.frame.size.height < 32) p.hidden = YES;
+                          LOGE(@"HIT10 hide 未认证 label");
+                          // 首次遇到时把所在窗口整棵树 dump 出来(定位未认证标的真实形态)
+                          if (!g_win10Seen) g_win10Seen = [NSMutableSet set];
+                          if (![g_win10Seen containsObject:@"未认证"] && g_win10Seen.count < 6) {
+                              [g_win10Seen addObject:@"未认证"];
+                              UIWindow *wnd = l.window;
+                              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                                  @try {
+                                      NSMutableString *o = [NSMutableString stringWithFormat:@"\n===== WIN10 未认证 =====\n"];
+                                      if (wnd) DumpView(wnd, 0, o);
+                                      LOGE(o);
+                                  } @catch (NSException *e) {}
+                              });
+                          }
+                      }
+                      return;
+                  }
+                  if (wasOurs) {
+                      objc_setAssociatedObject(l, &kMiloHideKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                      l.hidden = NO;
+                  }
+                  if (!text.length || text.length > 24) return;
+                  for (NSString *w in @[@"标签", @"座席管理", @"作息管理", @"域名配置"]) {
+                      if ([text isEqualToString:w] || ([text containsString:w] && text.length <= w.length + 4)) {
+                          if (!g_win10Seen) g_win10Seen = [NSMutableSet set];
+                          if (![g_win10Seen containsObject:w] && g_win10Seen.count < 6) {
+                              [g_win10Seen addObject:w];
+                              UIWindow *wnd = l.window;
+                              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                                  @try {
+                                      NSMutableString *o = [NSMutableString stringWithFormat:@"\n===== WIN10 %@ =====\n", w];
+                                      if (wnd) DumpView(wnd, 0, o);
+                                      LOGE(o);
+                                  } @catch (NSException *e) {}
+                              });
+                          }
+                          HideAncestorOfLabel(l, w);
+                          break;
+                      }
+                  }
+              } @catch (NSException *e) {}
+          }
+          // 验证码输入框: 原实现只允许 4 位, 数字输入时放宽到 6 位
+          static BOOL h_tf_shouldchange(id self, SEL _cmd, id tf, NSRange range, id str) {
+              BOOL r = NO;
+              IMP o = FindOrig(self, _cmd);
+              if (o) r = ((BOOL(*)(id, SEL, id, NSRange, id))o)(self, _cmd, tf, range, str);
+              if (r) return YES;
+              @try {
+                  UITextField *f = (UITextField *)tf;
+                  NSString *cur = f.text ?: @"";
+                  NSString *rep = [str isKindOfClass:[NSString class]] ? (NSString *)str : @"";
+                  if (range.location > cur.length || range.location + range.length > cur.length) return NO;
+                  NSUInteger nl = cur.length - range.length + rep.length;
+                  BOOL digits = YES;
+                  for (NSUInteger i = 0; i < cur.length; i++) { unichar c = [cur characterAtIndex:i]; if (c < '0' || c > '9') { digits = NO; break; } }
+                  if (digits) for (NSUInteger i = 0; i < rep.length; i++) { unichar c = [rep characterAtIndex:i]; if (c < '0' || c > '9') { digits = NO; break; } }
+                  NSString *del = NSStringFromClass([self class]);
+                  static int s_n = 0;
+                  if (s_n++ < 40) LOGE([NSString stringWithFormat:@"TFSC del=%@ tf=%@ cur=%lu new=%lu rep=\"%@\" digits=%d",
+                      del, NSStringFromClass([f class]), (unsigned long)cur.length, (unsigned long)nl, rep, digits]);
+                  if (digits && nl <= 6 && nl > cur.length) {
+                      LOGE([NSString stringWithFormat:@"TFSC allow6 del=%@ new=%lu", del, (unsigned long)nl]);
+                      return YES;
+                  }
+              } @catch (NSException *e) {}
+              return r;
+          }
+          static void HookTFDelegate(void) {
+              @try {
+                  if (!g_origMap) g_origMap = [NSMutableDictionary dictionary];
+                  int n = objc_getClassList(NULL, 0);
+                  Class *cs = (Class *)malloc(sizeof(Class) * (n > 0 ? n : 1));
+                  if (!cs) return;
+                  n = objc_getClassList(cs, n);
+                  SEL sel = NSSelectorFromString(@"textField:shouldChangeCharactersInRange:replacementString:");
+                  int hooked = 0;
+                  for (int i = 0; i < n; i++) {
+                      Class c = cs[i];
+                      const char *img = class_getImageName(c);
+                      if (!img) continue;
+                      if (strstr(img, "/System/Library") || strstr(img, "/usr/lib")) continue;
+                      Method m = FindOwnMethod(c, sel);
+                      if (!m) continue;
+                      IMP cur = method_getImplementation(m);
+                      if (cur == (IMP)h_tf_shouldchange) continue;
+                      g_origMap[MapKey(c, sel)] = [NSValue valueWithPointer:cur];
+                      method_setImplementation(m, (IMP)h_tf_shouldchange);
+                      hooked++;
+                      if (hooked <= 12) LOGE([NSString stringWithFormat:@"tfdel hook %s", class_getName(c)]);
+                  }
+                  free(cs);
+                  LOGE([NSString stringWithFormat:@"tfdel hooked=%d", hooked]);
+              } @catch (NSException *e) { LOGE(@"tfdel ERR"); }
+          }
           static int s_ivarDumped = 0;
           static int s_inVcAppear = 0;
           static void h_vc_appear(id self, SEL _cmd, BOOL anim) {
@@ -1888,6 +2164,8 @@ jobs:
               else if (g_vcaOrig) ((void(*)(id, SEL, BOOL))g_vcaOrig)(self, _cmd, anim);
               @try {
                   NSString *cls = NSStringFromClass([self class]);
+                  // brand10: 所有业务页面统一 dump 一次(类名/层级/ivar/输入框)
+                  if (VC10Interesting(cls)) MaybeDumpVC10(self, cls);
                   if ([cls containsString:@"Login"]) {
                       // 登录类页面: 立即 + 0.5s + 1.5s 三次压制(防被 reset)
                       for (int d = 0; d < 3; d++) {
@@ -1982,6 +2260,7 @@ jobs:
           // ===== 精准 UI 补丁(基于 brand3 真实视图树 dump) =====
           // 登录页 logo 数据(CI 从 milo_logo.png 生成 logo.h)
           #include "logo.h"
+          #include "logo_square.h"
           static UIImage *MiloLogoImg(void) {
               static UIImage *img = nil;
               if (!img && kMiloLogoPngLen > 0) {
@@ -1989,13 +2268,28 @@ jobs:
               }
               return img;
           }
+          // 关于我们页: 正方形 milo 图(CI 从 milo_logo_square.png 生成 logo_square.h)
+          static UIImage *MiloLogoSquareImg(void) {
+              static UIImage *img = nil;
+              if (!img && kMiloLogoSqPngLen > 0) {
+                  img = [UIImage imageWithData:[NSData dataWithBytes:kMiloLogoSqPng length:kMiloLogoSqPngLen] scale:2.0];
+              }
+              return img;
+          }
           // 1) 登录页欢迎图标: hook imageNamed: 命中 LaunchIcon 即换
           static IMP g_imgNamedOrig2 = NULL;
           static id h_imgNamed2(id self, SEL _cmd, id name) {
               @try {
-                  if ([name isKindOfClass:[NSString class]] && [name isEqualToString:@"LaunchIcon"]) {
-                      UIImage *m = MiloLogoImg();
-                      if (m) return m;
+                  if ([name isKindOfClass:[NSString class]]) {
+                      LogImgName((NSString *)name);
+                      if ([[(NSString *)name lowercaseString] containsString:@"about"]) {
+                          UIImage *sq = MiloLogoSquareImg();
+                          if (sq) { LOGE([NSString stringWithFormat:@"about logo -> square (%@)", name]); return sq; }
+                      }
+                      if ([name isEqualToString:@"LaunchIcon"]) {
+                          UIImage *m = MiloLogoImg();
+                          if (m) return m;
+                      }
                   }
               } @catch (NSException *e) {}
               return ((id(*)(id, SEL, id))g_imgNamedOrig2)(self, _cmd, name);
@@ -2004,9 +2298,16 @@ jobs:
           static IMP g_imgNamedBOOrig = NULL;
           static id h_imgNamedBO(id self, SEL _cmd, id name, id bundle, id trait) {
               @try {
-                  if ([name isKindOfClass:[NSString class]] && [name isEqualToString:@"LaunchIcon"]) {
-                      UIImage *m = MiloLogoImg();
-                      if (m) return m;
+                  if ([name isKindOfClass:[NSString class]]) {
+                      LogImgName((NSString *)name);
+                      if ([[(NSString *)name lowercaseString] containsString:@"about"]) {
+                          UIImage *sq = MiloLogoSquareImg();
+                          if (sq) { LOGE([NSString stringWithFormat:@"about logo -> square (%@)", name]); return sq; }
+                      }
+                      if ([name isEqualToString:@"LaunchIcon"]) {
+                          UIImage *m = MiloLogoImg();
+                          if (m) return m;
+                      }
                   }
               } @catch (NSException *e) {}
               return ((id(*)(id, SEL, id, id, id))g_imgNamedBOOrig)(self, _cmd, name, bundle, trait);
@@ -2327,7 +2628,7 @@ jobs:
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=brand9 09-10");
+              LOGE(@"BUILD=brand10 11-10");
               ComputeFVRange();
               // 视图树 dump: hook 基类 viewDidAppear(兜底子类未重写的 VC)
               @try {
@@ -2347,6 +2648,10 @@ jobs:
               dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ PatchTopVC(); });
               dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ PatchTopVC(); });
               dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(12 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ PatchTopVC(); });
+              // brand10: 验证码输入框 4->6 位(包装各 delegate 的 shouldChangeCharactersInRange, 类懒加载故多次补挂)
+              HookTFDelegate();
+              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ HookTFDelegate(); });
+              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ HookTFDelegate(); });
               // 精准 UI: 登录 logo 替换(imageNamed 命中 LaunchIcon)
               @try {
                   Method m = class_getClassMethod([UIImage class], @selector(imageNamed:));
@@ -2681,6 +2986,12 @@ jobs:
             xxd -i milo_logo.png | sed 's/unsigned char milo_logo_png\[\]/static const unsigned char kMiloLogoPng[]/; s/unsigned int milo_logo_png_len/static const unsigned int kMiloLogoPngLen/' > logo.h
           else
             echo "static const unsigned char kMiloLogoPng[1]={0}; static const unsigned int kMiloLogoPngLen=0;" > logo.h
+          fi
+          if [ -f milo_logo_square.png ]; then
+            echo "embedding milo_logo_square.png"
+            xxd -i milo_logo_square.png | sed 's/unsigned char milo_logo_square_png\[\]/static const unsigned char kMiloLogoSqPng[]/; s/unsigned int milo_logo_square_png_len/static const unsigned int kMiloLogoSqPngLen/' > logo_square.h
+          else
+            echo "static const unsigned char kMiloLogoSqPng[1]={0}; static const unsigned int kMiloLogoSqPngLen=0;" > logo_square.h
           fi
           clang -target arm64-apple-ios14.0 \
             -isysroot "$SDK" \
