@@ -28,6 +28,7 @@ jobs:
           cat > hook.m << 'OBJC'
           #import <UIKit/UIKit.h>
           #import <AVFoundation/AVFoundation.h>
+          #import <AudioToolbox/AudioToolbox.h>
           #import <objc/runtime.h>
           #import <objc/message.h>
           #include <string.h>
@@ -3747,8 +3748,153 @@ jobs:
               if (g_exportOrig) ((void(*)(id, SEL, id))g_exportOrig)(self, _cmd, handler);
           }
 
+          // ===== brand19: 后台/未读/通话铃声/付费弹窗 =====
+          // 统一的前后台修复入口: 停铃声 + 清通知 + 标记"本次从后台返回需跳过首拉/首个弹窗"
+          static void MiloForegroundFix19(NSString *why) {
+              BOOL fromBG = [why isEqualToString:@"willEnterForeground"];
+              @try { LOGE([NSString stringWithFormat:@"FG-FIX %@", why]); } @catch (NSException *e) {}
+              @try { AudioServicesStopSystemSound(0); AudioServicesDisposeSystemSoundID(0); } @catch (NSException *e) {}
+              @try {
+                  Class NC = NSClassFromString(@"UNUserNotificationCenter");
+                  if (NC) {
+                      id center = ((id(*)(id, SEL))objc_msgSend)(NC, sel_registerName("currentNotificationCenter"));
+                      if (center) {
+                          ((void(*)(id, SEL))objc_msgSend)(center, sel_registerName("removeAllPendingNotificationRequests"));
+                          ((void(*)(id, SEL))objc_msgSend)(center, sel_registerName("removeAllDeliveredNotifications"));
+                      }
+                  }
+              } @catch (NSException *e) {}
+              if (fromBG) {
+                  // 只有"从后台返回"才设置(冷启动不设, 避免首拉被跳过导致聊天记录空白)
+                  @try {
+                      [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"milo_skip_pull_once"];
+                      [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"milo_skip_vip_once"];
+                      [[NSUserDefaults standardUserDefaults] synchronize];
+                  } @catch (NSException *e) {}
+              }
+          }
+          // 通话结束时立即停铃声 + 清通知 + 标记付费已看过
+          static void MiloStopRingAndClearNotif(void) {
+              @try { AudioServicesStopSystemSound(0); AudioServicesDisposeSystemSoundID(0); } @catch (NSException *e) {}
+              @try {
+                  Class NC = NSClassFromString(@"UNUserNotificationCenter");
+                  if (NC) {
+                      id center = ((id(*)(id, SEL))objc_msgSend)(NC, sel_registerName("currentNotificationCenter"));
+                      if (center) {
+                          ((void(*)(id, SEL, id))objc_msgSend)(center, sel_registerName("removeAllPendingNotificationRequests"));
+                          ((void(*)(id, SEL, id))objc_msgSend)(center, sel_registerName("removeAllDeliveredNotifications"));
+                      }
+                  }
+              } @catch (NSException *e) {}
+              LOGE(@"CALL-END ring-stop + notif-clear");
+          }
+          // 拦截 WKApp showVipAlertView: 从后台返回后的首个弹窗拦掉, 之后正常(避免把付费入口永久关死)
+          static IMP g_vipAlert19Orig = NULL;
+          static void h_vipAlert19(id self, SEL _cmd, unsigned long long from) {
+              @try {
+                  if ([[NSUserDefaults standardUserDefaults] boolForKey:@"milo_skip_vip_once"]) {
+                      [[NSUserDefaults standardUserDefaults] removeObjectForKey:@"milo_skip_vip_once"];
+                      [[NSUserDefaults standardUserDefaults] synchronize];
+                      LOGE([NSString stringWithFormat:@"VIP-ALERT BLOCKED once from=%llu", from]);
+                      return;
+                  }
+                  LOGE([NSString stringWithFormat:@"VIP-ALERT pass from=%llu", from]);
+              } @catch (NSException *e) {}
+              if (g_vipAlert19Orig) ((void(*)(id, SEL, unsigned long long))g_vipAlert19Orig)(self, _cmd, from);
+          }
+          // 未读消息: 从后台返回后的首次 pullLastMessages 直接跳过, 不覆盖本地已读状态
+          static IMP g_pullLast19Orig = NULL;
+          static void h_pullLast19(id self, SEL _cmd, id channel, long limit, id comp) {
+              NSString *cid = nil;
+              @try { cid = [channel valueForKey:@"channelId"]; } @catch (NSException *e) {}
+              if ([[NSUserDefaults standardUserDefaults] boolForKey:@"milo_skip_pull_once"]) {
+                  @try { [[NSUserDefaults standardUserDefaults] removeObjectForKey:@"milo_skip_pull_once"]; } @catch (NSException *e) {}
+                  @try { [[NSUserDefaults standardUserDefaults] synchronize]; } @catch (NSException *e) {}
+                  LOGE([NSString stringWithFormat:@"pullLast SKIPPED(后台返回首拉) ch=%@ limit=%ld", cid, limit]);
+                  if (comp) {
+                      @try {
+                          void (^cb)(NSArray *, NSError *) = (void (^)(NSArray *, NSError *))(__bridge id)comp;
+                          cb(@[], nil);
+                      } @catch (NSException *e) {}
+                  }
+                  return;
+              }
+              if (g_pullLast19Orig) ((void(*)(id, SEL, id, long, id))g_pullLast19Orig)(self, _cmd, channel, limit, comp);
+          }
+          static void MiloFix17Hooks(void) {
+              static dispatch_once_t once;
+              dispatch_once(&once, ^{
+                  LOGE(@"brand19 hooks installing");
+                  // 1. 应用生命周期: 监听通知(不依赖具体 AppDelegate 类, 冷启动不会误触发 willEnterForeground)
+                  @try {
+                      NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
+                      [nc addObserverForName:@"UIApplicationWillEnterForegroundNotification" object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) {
+                          MiloForegroundFix19(@"willEnterForeground");
+                      }];
+                      [nc addObserverForName:@"UIApplicationDidBecomeActiveNotification" object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) {
+                          MiloForegroundFix19(@"didBecomeActive");
+                      }];
+                      LOGE(@"brand19 lifecycle observers installed");
+                  } @catch (NSException *e) {}
+                  // 2. 通话结束触发停铃声 (挂起/取消/拒绝)
+                  @try {
+                      Class app = objc_getClass("WKApp");
+                      if (app) {
+                          Method mv = class_getInstanceMethod(app, NSSelectorFromString(@"showVipAlertView:"));
+                          if (mv) { g_vipAlert19Orig = method_getImplementation(mv); method_setImplementation(mv, (IMP)h_vipAlert19); LOGE(@"brand19 vipAlert hooked"); }
+                      }
+                  } @catch (NSException *e) {}
+                  // 3. 未读消息: pullLastMessages 拦截(懒加载, 多次重试)
+                  @try {
+                      Class cm = objc_getClass("WKChatManager");
+                      if (cm && [cm instancesRespondToSelector:@selector(pullLastMessages:limit:complete:)]) {
+                          Method mp = class_getInstanceMethod(cm, @selector(pullLastMessages:limit:complete:));
+                          if (mp) { g_pullLast19Orig = method_getImplementation(mp); method_setImplementation(mp, (IMP)h_pullLast19); LOGE(@"brand19 pullLast hooked"); }
+                      }
+                  } @catch (NSException *e) {}
+                  // 4. 通话结束 hook — WKRTCP2PSignalingManager sendHangup/sendCancel/sendRefuse/dismiss
+                  {
+                      const char *clsArr[] = {"WKRTCP2PSignalingManager", "WKRTCManager", "WKApp", "WKTP2PSignalingChannel"};
+                      const char *selArr[] = {"sendHangup:time:", "sendRefuse:callType:", "sendCancel:callType:", "dismiss:complete:", "sendHangup:", "sendRefuse:"};
+                      for (int i = 0; i < 4; i++) {
+                          Class c = objc_getClass(clsArr[i]);
+                          if (!c) continue;
+                          for (int j = 0; j < 6; j++) {
+                              SEL s = NSSelectorFromString(selArr[j]);
+                              Method m = FindOwnMethod(c, s);
+                              if (!m) continue;
+                              int na = (int)method_getNumberOfArguments(m) - 2;
+                              NSString *key = [NSString stringWithFormat:@"%s:%s", clsArr[i], selArr[j]];
+                              if (g_origMap && g_origMap[MapKey(c, s)]) continue;
+                              if (!g_origMap) g_origMap = [NSMutableDictionary dictionary];
+                              IMP orig = method_getImplementation(m);
+                              if (na <= 0 || na > 2) continue;
+                              if (na == 1) {
+                                  SEL capSel = s;
+                                  IMP n2 = imp_implementationWithBlock(^(id slf, id a1) {
+                                      MiloStopRingAndClearNotif();
+                                      ((void(*)(id, SEL, id))orig)(slf, capSel, a1);
+                                  });
+                                  g_origMap[MapKey(c, s)] = [NSValue valueWithPointer:orig];
+                                  method_setImplementation(m, n2);
+                              } else {
+                                  SEL capSel = s;
+                                  IMP n3 = imp_implementationWithBlock(^(id slf, id a1, id a2) {
+                                      MiloStopRingAndClearNotif();
+                                      ((void(*)(id, SEL, id, id))orig)(slf, capSel, a1, a2);
+                                  });
+                                  g_origMap[MapKey(c, s)] = [NSValue valueWithPointer:orig];
+                                  method_setImplementation(m, n3);
+                              }
+                              LOGE([NSString stringWithFormat:@"brand19 call-end hook %s %s", clsArr[i], selArr[j]]);
+                          }
+                      }
+                  }
+              });
+          }
+
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=brand18 11-10");
+              LOGE(@"BUILD=brand20 11-11");
               MiloNetLog(@"appLaunch brand18");
               ComputeFVRange();
               // 视图树 dump: hook 基类 viewDidAppear(兜底子类未重写的 VC)
@@ -3812,6 +3958,10 @@ jobs:
                   Method mb = class_getInstanceMethod([NSBundle class], @selector(bundleIdentifier));
                   if (mb) { g_biOrig = method_getImplementation(mb); method_setImplementation(mb, (IMP)h_bundleId); LOGE(@"brand bundleid hooked"); }
               } @catch (NSException *e) {}
+              // brand19: 通话铃声停止/付费弹窗持久化/未读不刷/检查更新URL — 多次重试补挂(类懒加载)
+              for (int i19 = 1; i19 <= 10; i19++) {
+                  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i19 * 4 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ MiloFix17Hooks(); });
+              }
               // 品牌化: 本地化字符串 utalk->milo
               @try {
                   Method ml = class_getInstanceMethod([NSBundle class], @selector(localizedStringForKey:value:table:));
@@ -4134,7 +4284,7 @@ jobs:
             -I"$SDK/usr/include" \
             -fobjc-arc -dynamiclib -O2 -Wno-deprecated-declarations \
             -Wno-unused-function -Wno-unused-variable \
-            -framework Foundation -framework UIKit \
+            -framework Foundation -framework UIKit -framework AudioToolbox \
             -undefined dynamic_lookup \
             -fuse-ld="$LINKER" \
             -Wl,-platform_version,ios,14.0,14.0 \
