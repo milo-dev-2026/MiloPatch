@@ -35,6 +35,52 @@ jobs:
           #include <signal.h>
           #include <dlfcn.h>
 
+          // ===== brand23: 铃声真正走 AudioServicesCreateSystemSoundID (.caf 循环播放), 必须拿到真实 sid =====
+          #define MILO_MAX_SID 32
+          static SystemSoundID g_sids23[MILO_MAX_SID];
+          static int g_sidCnt23 = 0;
+          static void MiloTrackSid23(SystemSoundID sid) {
+              if (sid == 0) return;
+              for (int i = 0; i < g_sidCnt23; i++) if (g_sids23[i] == sid) return;
+              if (g_sidCnt23 < MILO_MAX_SID) g_sids23[g_sidCnt23++] = sid;
+          }
+          static void MiloUntrackSid23(SystemSoundID sid) {
+              for (int i = 0; i < g_sidCnt23; i++) {
+                  if (g_sids23[i] == sid) {
+                      g_sids23[i] = g_sids23[--g_sidCnt23];
+                      return;
+                  }
+              }
+          }
+          static void MiloDisposeAllSids23(void) {
+              int n = g_sidCnt23;
+              for (int i = 0; i < n; i++) {
+                  SystemSoundID sid = g_sids23[i];
+                  @try { AudioServicesStopSystemSound(sid); } @catch (NSException *e) {}
+                  @try { AudioServicesDisposeSystemSoundID(sid); } @catch (NSException *e) {}
+              }
+              g_sidCnt23 = 0;
+              LOGE([NSString stringWithFormat:@"SID23 dispose n=%d", n]);
+          }
+          static OSStatus Milo_CreateSSID(CFURLRef inFileURL, SystemSoundID *outSSID) {
+              OSStatus r = AudioServicesCreateSystemSoundID(inFileURL, outSSID);
+              @try {
+                  NSString *path = nil;
+                  if (inFileURL) path = [(__bridge NSURL *)inFileURL lastPathComponent];
+                  LOGE([NSString stringWithFormat:@"SSID-CREATE ret=%ld sid=%u url=%@", (long)r, outSSID ? *outSSID : 0, path ?: @""]);
+                  if (r == 0 && outSSID) MiloTrackSid23(*outSSID);
+              } @catch (NSException *e) {}
+              return r;
+          }
+          static void Milo_DisposeSSID(SystemSoundID sid) {
+              MiloUntrackSid23(sid);
+              AudioServicesDisposeSystemSoundID(sid);
+          }
+          __attribute__((used)) static struct { const void *repl; const void *orig; } _milo_interpose_audio[] __attribute__((section("__DATA,__interpose"))) = {
+              { (const void *)Milo_CreateSSID, (const void *)AudioServicesCreateSystemSoundID },
+              { (const void *)Milo_DisposeSSID, (const void *)AudioServicesDisposeSystemSoundID },
+          };
+
           static NSArray *BlockTitles(void) {
               static NSArray *a;
               static dispatch_once_t once;
@@ -3793,9 +3839,10 @@ jobs:
           static void MiloMuteRing22(void) {
               g_ringMuteUntil22 = CFAbsoluteTimeGetCurrent() + 10.0;
               MiloSilenceAudio22();
+              MiloDisposeAllSids23();
               // 挂断后 App 可能立刻重播, 再补两刀
-              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ MiloSilenceAudio22(); });
-              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ MiloSilenceAudio22(); });
+              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ MiloSilenceAudio22(); MiloDisposeAllSids23(); });
+              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ MiloSilenceAudio22(); MiloDisposeAllSids23(); });
           }
           static IMP g_avpPlay22 = NULL;
           static void h_avpPlay22(id self, SEL _cmd) {
@@ -3878,6 +3925,34 @@ jobs:
               }
           }
           // ===== brand19: 后台/未读/通话铃声/付费弹窗 =====
+          // brand23: 后台来电返回前台时, 通话窗口可能被隐藏/非 key, 重新拉起
+          static void MiloRecoverCallWindow23(void) {
+              @try {
+                  Class appCls = objc_getClass("UIApplication");
+                  if (!appCls) return;
+                  id app = ((id(*)(id, SEL))objc_msgSend)(appCls, sel_registerName("sharedApplication"));
+                  NSArray *wins = ((id(*)(id, SEL))objc_msgSend)(app, sel_registerName("windows"));
+                  for (id w in wins) {
+                      id root = ((id(*)(id, SEL))objc_msgSend)(w, sel_registerName("rootViewController"));
+                      NSString *cls = root ? NSStringFromClass(object_getClass(root)) : @"<no rootVC>";
+                      BOOL hidden = NO;
+                      @try { hidden = ((BOOL(*)(id, SEL))objc_msgSend)(w, sel_registerName("isHidden")); } @catch (NSException *e) {}
+                      BOOL key = NO;
+                      @try { key = ((BOOL(*)(id, SEL))objc_msgSend)(w, sel_registerName("isKeyWindow")); } @catch (NSException *e) {}
+                      LOGE([NSString stringWithFormat:@"WIN23 %@ hidden=%d key=%d", cls, hidden, key]);
+                      NSRange r = [cls rangeOfString:@"Call" options:NSCaseInsensitiveSearch];
+                      NSRange r2 = [cls rangeOfString:@"RTC" options:NSCaseInsensitiveSearch];
+                      NSRange r3 = [cls rangeOfString:@"Ring" options:NSCaseInsensitiveSearch];
+                      NSRange r4 = [cls rangeOfString:@"Accept" options:NSCaseInsensitiveSearch];
+                      NSRange r5 = [cls rangeOfString:@"Incoming" options:NSCaseInsensitiveSearch];
+                      if (r.location != NSNotFound || r2.location != NSNotFound || r3.location != NSNotFound || r4.location != NSNotFound || r5.location != NSNotFound) {
+                          LOGE([NSString stringWithFormat:@"CALL-WIN23 found %@ -> makeKeyAndVisible", cls]);
+                          @try { ((void(*)(id, SEL))objc_msgSend)(w, sel_registerName("setHidden:"), NO); } @catch (NSException *e) {}
+                          @try { ((void(*)(id, SEL))objc_msgSend)(w, sel_registerName("makeKeyAndVisible")); } @catch (NSException *e) {}
+                      }
+                  }
+              } @catch (NSException *e) {}
+          }
           // 统一的前后台修复入口: 停铃声 + 清通知 + 标记"本次从后台返回需跳过首拉/首个弹窗"
           static void MiloForegroundFix19(NSString *why) {
               BOOL fromBG = [why isEqualToString:@"willEnterForeground"];
@@ -3896,6 +3971,7 @@ jobs:
                       }
                   }
               } @catch (NSException *e) {}
+              MiloRecoverCallWindow23();
               MiloMuteRing22();
               @try { AudioServicesDisposeSystemSoundID(0); } @catch (NSException *e) {}
               @try {
@@ -4043,7 +4119,7 @@ jobs:
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=brand22 11-11");
+              LOGE(@"BUILD=brand23 11-11");
               MiloNetLog(@"appLaunch brand18");
               ComputeFVRange();
               // 视图树 dump: hook 基类 viewDidAppear(兜底子类未重写的 VC)
