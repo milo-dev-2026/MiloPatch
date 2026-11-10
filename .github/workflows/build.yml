@@ -2496,6 +2496,85 @@ jobs:
               MiloHookAppear(NSClassFromString(@"WKMeVC"), (IMP)h_meAppear, &g_meAppearOrig);
               MiloHookAppear(NSClassFromString(@"FAAboutAppVC"), (IMP)h_aboutAppear, &g_aboutAppearOrig);
           }
+          // ===== brand14: VIP 白名单 / 系统账号「官方」标签 / 我的页余额卡 =====
+          static NSSet *g_vipUids14 = nil;
+          static BOOL MiloVipUid14(NSString *u) {
+              static dispatch_once_t once14;
+              dispatch_once(&once14, ^{
+                  g_vipUids14 = [NSSet setWithArray:@[
+                      @"06448fc919214f0b8615710d40910382",   // 西安雷虎虎(自己)
+                      @"57926b1c161d4d7d99387d9f11bf49ca",   // 挂群--预约找客服
+                      @"e1565f5c8dd3495a9a92fdf88f0bf44c"    // 爸爸
+                  ]];
+              });
+              return (u && [u isKindOfClass:[NSString class]] && [g_vipUids14 containsObject:u]);
+          }
+          static NSString *MiloUidOfObj14(id o) {
+              @try {
+                  if ([o respondsToSelector:@selector(uid)]) {
+                      id u = [o performSelector:@selector(uid)];
+                      if ([u isKindOfClass:[NSString class]]) return u;
+                  }
+                  if ([o respondsToSelector:@selector(channel)]) {
+                      id ch = [o performSelector:@selector(channel)];
+                      if ([ch respondsToSelector:@selector(channelId)]) {
+                          id u = [ch performSelector:@selector(channelId)];
+                          if ([u isKindOfClass:[NSString class]]) return u;
+                      }
+                  }
+              } @catch (NSException *e) {}
+              return nil;
+          }
+          // 系统账号那行后面挂一个「官方」小标签
+          static IMP g_hdrRefresh14 = NULL;
+          static void h_hdrRefresh14(id self, SEL _cmd, id model) {
+              if (g_hdrRefresh14) ((void(*)(id, SEL, id))g_hdrRefresh14)(self, _cmd, model);
+              @try {
+                  UILabel *tl = [self valueForKey:@"titleLbl"];
+                  if (![tl isKindOfClass:[UILabel class]]) return;
+                  if (![tl.text isEqualToString:@"系统账号"]) return;
+                  UIView *host = [self valueForKey:@"contentView"];
+                  if (!host) host = (UIView *)self;
+                  UILabel *tag = (UILabel *)[host viewWithTag:0x0FF1CE];
+                  if (![tag isKindOfClass:[UILabel class]]) {
+                      tag = [[UILabel alloc] initWithFrame:CGRectZero];
+                      tag.tag = 0x0FF1CE;
+                      tag.text = @"官方";
+                      tag.font = [UIFont boldSystemFontOfSize:9];
+                      tag.textColor = [UIColor colorWithRed:0.13 green:0.45 blue:0.98 alpha:1.0];
+                      tag.backgroundColor = [UIColor colorWithRed:0.87 green:0.93 blue:1.0 alpha:1.0];
+                      tag.textAlignment = NSTextAlignmentCenter;
+                      tag.layer.cornerRadius = 3;
+                      tag.layer.masksToBounds = YES;
+                      tag.translatesAutoresizingMaskIntoConstraints = NO;
+                      [host addSubview:tag];
+                      [tag.widthAnchor constraintEqualToConstant:28].active = YES;
+                      [tag.heightAnchor constraintEqualToConstant:15].active = YES;
+                      [tag.centerYAnchor constraintEqualToAnchor:tl.centerYAnchor].active = YES;
+                      [tag.leadingAnchor constraintEqualToAnchor:tl.trailingAnchor constant:5].active = YES;
+                      LOGE(@"RE14 official tag added");
+                  }
+                  tag.hidden = NO;
+              } @catch (NSException *e) { LOGE(@"RE14 hdr tag ERR"); }
+          }
+          // 我的页头部: 隐藏 U 币余额卡(ucoinCardView)并把它的高度约束归零
+          static IMP g_hdrReload14 = NULL;
+          static void h_hdrReload14(id self, SEL _cmd) {
+              if (g_hdrReload14) ((void(*)(id, SEL))g_hdrReload14)(self, _cmd);
+              @try {
+                  id v = [self valueForKey:@"ucoinCardView"];
+                  if ([v isKindOfClass:[UIView class]]) {
+                      UIView *uv = (UIView *)v;
+                      uv.hidden = YES;
+                      for (NSLayoutConstraint *c in [uv constraints]) {
+                          if (c.firstAttribute == NSLayoutAttributeHeight && c.firstItem == uv && c.constant > 0) {
+                              c.constant = 0;
+                          }
+                      }
+                      LOGE(@"RE14 ucoin card hidden");
+                  }
+              } @catch (NSException *e) { LOGE(@"RE14 ucoin ERR"); }
+          }
           // ===== brand13: 通讯录真删行/改名, +号菜单真删, VIP/未认证, 我的页头图收高, 付费弹窗 =====
           static NSMutableSet *g_ct13Seen = nil;
           static NSMutableSet *g_more13Seen = nil;
@@ -2589,11 +2668,14 @@ jobs:
           // 头像/昵称: 强制 VIP=1, 已认证=YES; 隐藏"未认证"标签
           static IMP g_avatarCfg13 = NULL;
           static void h_avatarCfg13(id self, SEL _cmd, id uid, long long vip, BOOL verified) {
-              if (g_avatarCfg13) ((void(*)(id, SEL, id, long long, BOOL))g_avatarCfg13)(self, _cmd, uid, 1, YES);
+              long long v14 = vip;
+              NSString *u14 = [uid isKindOfClass:[NSString class]] ? (NSString *)uid : nil;
+              if (v14 < 1 && MiloVipUid14(u14)) v14 = 1;
+              if (g_avatarCfg13) ((void(*)(id, SEL, id, long long, BOOL))g_avatarCfg13)(self, _cmd, uid, v14, verified);
           }
           static IMP g_nickColor13 = NULL;
           static id h_nickColor13(id self, SEL _cmd, long long chType, long long vip, long long gType, long long fromType) {
-              if (g_nickColor13) return ((id(*)(id, SEL, long long, long long, long long, long long))g_nickColor13)(self, _cmd, chType, 1, gType, fromType);
+              if (g_nickColor13) return ((id(*)(id, SEL, long long, long long, long long, long long))g_nickColor13)(self, _cmd, chType, vip, gType, fromType);
               return nil;
           }
           static IMP g_setTags13 = NULL;
@@ -2721,6 +2803,8 @@ jobs:
               MiloHook13(@"WKUserColorUtil", @selector(nickNameColorWithchannelType:vip:groupType:fromType:), (IMP)h_nickColor13, &g_nickColor13, YES);
               MiloHook13(@"FAUserTagsView", @selector(setTags:), (IMP)h_setTags13, &g_setTags13, NO);
               MiloHook13(@"WKApp", @selector(showVipAlertView:), (IMP)h_vipAlert13, &g_vipAlert13, NO);
+              MiloHook13(@"WKContactsHeaderItemCell", @selector(refresh:), (IMP)h_hdrRefresh14, &g_hdrRefresh14, NO);
+              MiloHook13(@"FTProfileTableViewHeader", @selector(reloadData), (IMP)h_hdrReload14, &g_hdrReload14, NO);
           }
           static int s_ivarDumped = 0;
           static int s_inVcAppear = 0;
@@ -2979,8 +3063,12 @@ jobs:
               for (int i = 0; i < g_eN; i++) if (g_eC[i] == k) { o = g_eI[i]; break; }
               id v = o ? ((id(*)(id, SEL))o)(self, _cmd) : nil;
               NSMutableDictionary *d = [v isKindOfClass:[NSDictionary class]] ? [v mutableCopy] : [NSMutableDictionary dictionary];
-              if (![d[@"vip"] boolValue]) d[@"vip"] = @1;
-              if (![d[@"verified"] boolValue]) d[@"verified"] = @1;
+              // brand14: 只给白名单内的账号注入 vip/verified(登录信息 uid 缺失时视为自己)
+              NSString *eu14 = MiloUidOfObj14(self);
+              if (eu14 == nil || MiloVipUid14(eu14)) {
+                  if (![d[@"vip"] boolValue]) d[@"vip"] = @1;
+                  if (![d[@"verified"] boolValue]) d[@"verified"] = @1;
+              }
               LOGE([NSString stringWithFormat:@"extra-INJECT %s vip=%@ verified=%@ orig=%@",
                    class_getName(k), d[@"vip"], d[@"verified"], v]);
               return d;
@@ -3196,7 +3284,7 @@ jobs:
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=brand13 11-10");
+              LOGE(@"BUILD=brand14 11-10");
               ComputeFVRange();
               // 视图树 dump: hook 基类 viewDidAppear(兜底子类未重写的 VC)
               @try {
