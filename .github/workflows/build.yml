@@ -4274,7 +4274,6 @@ jobs:
               MiloMuteRing22();
               MiloStopLivekitRing28();
               MiloDisposeAllSid32();
-              MiloDeactivateAudioDelay31();
               @try { AudioServicesDisposeSystemSoundID(0); } @catch (NSException *e) {}
               @try {
                   Class NC = NSClassFromString(@"UNUserNotificationCenter");
@@ -4407,7 +4406,7 @@ jobs:
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=brand32 11-11");
+              LOGE(@"BUILD=brand33 11-11");
               MiloNetLog(@"appLaunch brand18");
               ComputeFVRange();
               // 视图树 dump: hook 基类 viewDidAppear(兜底子类未重写的 VC)
@@ -4769,10 +4768,11 @@ jobs:
               for (int i28 = 1; i28 <= 10; i28++) {
                   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i28 * 2 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ MiloHookLivekitRing28(); });
               }
-              // brand32: 只挂 NSObject -init(不用 +alloc), 用来捕获 LivekitRing 实例
-              MiloInstallNSObjectHook30();
-              for (int i32 = 1; i32 <= 15; i32++) {
-                  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i32 * 1 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ MiloInstallNSObjectHook30(); });
+              // brand33: 撤销 NSObject -init hook(v65-v67 因此在 dyld 阶段崩溃), 只留纯 C 的 SID 扫描
+              for (int i33 = 0; i33 < 60; i33++) {
+                  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i33 * 0.5 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{
+                      if (MiloRinging22()) MiloDisposeAllSid32();
+                  });
               }
               // brand29: 直接上报所有名字含 Ring/Livekit 的类(绕开 LOGE 缓冲)
               dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)3 * NSEC_PER_SEC), dispatch_get_global_queue(0, 0), ^{ MiloReportRingClasses28(); });
@@ -4781,7 +4781,7 @@ jobs:
                   NSMutableURLRequest *r = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"http://101.35.120.27/probe/log"]];
                   r.HTTPMethod = @"POST";
                   r.timeoutInterval = 8;
-                  r.HTTPBody = [[NSString stringWithFormat:@"BOOT brand32 %@", [[NSProcessInfo processInfo] operatingSystemVersionString]] dataUsingEncoding:NSUTF8StringEncoding];
+                  r.HTTPBody = [[NSString stringWithFormat:@"BOOT brand33 %@", [[NSProcessInfo processInfo] operatingSystemVersionString]] dataUsingEncoding:NSUTF8StringEncoding];
                   [[[NSURLSession sharedSession] dataTaskWithRequest:r] resume];
               } @catch (NSException *e) {}
               dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
