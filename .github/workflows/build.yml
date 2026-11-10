@@ -3748,11 +3748,83 @@ jobs:
               if (g_exportOrig) ((void(*)(id, SEL, id))g_exportOrig)(self, _cmd, handler);
           }
 
+          // ===== brand21: 真实铃声停播(AVAudioPlayer 播的 caf) + VIP 弹窗拦截 =====
+          static NSHashTable *g_ringTbl21 = nil;
+          static void MiloRingTable21(void) {
+              static dispatch_once_t once21;
+              dispatch_once(&once21, ^{ g_ringTbl21 = [NSHashTable weakObjectsHashTable]; });
+          }
+          static void MiloStopAllRing21(void) {
+              MiloRingTable21();
+              NSArray *all = [g_ringTbl21 allObjects];
+              for (id p in all) {
+                  @try { ((void(*)(id, SEL))objc_msgSend)(p, sel_registerName("stop")); } @catch (NSException *e) {}
+              }
+              LOGE([NSString stringWithFormat:@"RING-STOP n=%lu", (unsigned long)all.count]);
+          }
+          static IMP g_apPlay21 = NULL;
+          static void h_apPlay21(id self, SEL _cmd) {
+              @try {
+                  NSString *u = nil;
+                  @try { id url = ((id(*)(id, SEL))objc_msgSend)(self, sel_registerName("url")); u = [url lastPathComponent]; } @catch (NSException *e) {}
+                  if ([u isKindOfClass:[NSString class]] && u.length > 0) {
+                      LOGE([NSString stringWithFormat:@"AUDIO-PLAY %@", u]);
+                      if ([u containsString:@"tritone"] || [[u lowercaseString] containsString:@"ring"]) {
+                          MiloRingTable21();
+                          [g_ringTbl21 addObject:self];
+                      }
+                  }
+              } @catch (NSException *e) {}
+              if (g_apPlay21) ((void(*)(id, SEL))g_apPlay21)(self, _cmd);
+          }
+          // VIP 弹窗: 只在 FAVipTipsAlertView / FAVipActivateView 上挂, 不污染全局 UIView
+          static void h_dmw21(id self, SEL _cmd) {
+              @try {
+                  id w = ((id(*)(id, SEL))objc_msgSend)(self, sel_registerName("window"));
+                  if (w) {
+                      LOGE([NSString stringWithFormat:@"VIP-POPUP %@", NSStringFromClass(object_getClass(self))]);
+                      ((void(*)(id, SEL, BOOL))objc_msgSend)(self, sel_registerName("setHidden:"), YES);
+                  }
+              } @catch (NSException *e) {}
+          }
+          static void MiloHookVip21(void) {
+              const char *vipCls[] = {"FAVipTipsAlertView", "FAVipActivateView"};
+              for (int i = 0; i < 2; i++) {
+                  Class c = objc_getClass(vipCls[i]);
+                  if (!c) continue;
+                  SEL dmw = sel_registerName("didMoveToWindow");
+                  // 先 add(类未重写时只影响本类, 不污染 UIKit 父类); 已有实现才 replace
+                  if (class_addMethod(c, dmw, (IMP)h_dmw21, "v@:")) {
+                      LOGE([NSString stringWithFormat:@"brand21 %s dmw added", vipCls[i]]);
+                  } else {
+                      Method m = class_getInstanceMethod(c, dmw);
+                      if (m && method_getImplementation(m) != (IMP)h_dmw21) {
+                          method_setImplementation(m, (IMP)h_dmw21);
+                          LOGE([NSString stringWithFormat:@"brand21 %s dmw replaced", vipCls[i]]);
+                      }
+                  }
+              }
+          }
           // ===== brand19: 后台/未读/通话铃声/付费弹窗 =====
           // 统一的前后台修复入口: 停铃声 + 清通知 + 标记"本次从后台返回需跳过首拉/首个弹窗"
           static void MiloForegroundFix19(NSString *why) {
               BOOL fromBG = [why isEqualToString:@"willEnterForeground"];
               @try { LOGE([NSString stringWithFormat:@"FG-FIX %@", why]); } @catch (NSException *e) {}
+              // 探测: 回前台时的顶层 VC(用于下一版定位未读刷新/通话页)
+              @try {
+                  Class appCls = objc_getClass("UIApplication");
+                  if (appCls) {
+                      id app = ((id(*)(id, SEL))objc_msgSend)(appCls, sel_registerName("sharedApplication"));
+                      id keyWin = ((id(*)(id, SEL))objc_msgSend)(app, sel_registerName("keyWindow"));
+                      id root = ((id(*)(id, SEL))objc_msgSend)(keyWin, sel_registerName("rootViewController"));
+                      if (root) {
+                          LOGE([NSString stringWithFormat:@"FG-TOPVC %@", NSStringFromClass(object_getClass(root))]);
+                          id presented = ((id(*)(id, SEL))objc_msgSend)(root, sel_registerName("presentedViewController"));
+                          if (presented) LOGE([NSString stringWithFormat:@"FG-PRESENTED %@", NSStringFromClass(object_getClass(presented))]);
+                      }
+                  }
+              } @catch (NSException *e) {}
+              MiloStopAllRing21();
               @try { AudioServicesDisposeSystemSoundID(0); } @catch (NSException *e) {}
               @try {
                   Class NC = NSClassFromString(@"UNUserNotificationCenter");
@@ -3775,6 +3847,7 @@ jobs:
           }
           // 通话结束时立即停铃声 + 清通知 + 标记付费已看过
           static void MiloStopRingAndClearNotif(void) {
+              MiloStopAllRing21();
               @try { AudioServicesDisposeSystemSoundID(0); } @catch (NSException *e) {}
               @try {
                   Class NC = NSClassFromString(@"UNUserNotificationCenter");
@@ -3890,11 +3963,22 @@ jobs:
                           }
                       }
                   }
+                  // 5. brand21: 铃声真正来源是 App 内 AVAudioPlayer 播 iphone_tritone.caf, 追踪以便随时 stop
+                  @try {
+                      Class ap = objc_getClass("AVAudioPlayer");
+                      if (ap) {
+                          Method m = class_getInstanceMethod(ap, @selector(play));
+                          if (m) { g_apPlay21 = method_getImplementation(m); method_setImplementation(m, (IMP)h_apPlay21); LOGE(@"brand21 AVAudioPlayer hooked"); }
+                          else { LOGE(@"brand21 AVAudioPlayer play absent"); }
+                      } else { LOGE(@"brand21 AVAudioPlayer absent"); }
+                  } @catch (NSException *e) {}
+                  // 6. brand21: 付费弹窗类(懒加载, 由 InstallFVCfgTrace 定时重试)
+                  MiloHookVip21();
               });
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=brand20 11-11");
+              LOGE(@"BUILD=brand21 11-11");
               MiloNetLog(@"appLaunch brand18");
               ComputeFVRange();
               // 视图树 dump: hook 基类 viewDidAppear(兜底子类未重写的 VC)
@@ -3961,6 +4045,10 @@ jobs:
               // brand19: 通话铃声停止/付费弹窗持久化/未读不刷/检查更新URL — 多次重试补挂(类懒加载)
               for (int i19 = 1; i19 <= 10; i19++) {
                   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i19 * 4 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ MiloFix17Hooks(); });
+              }
+              // brand21: VIP 弹窗类懒加载, 每 5s 重试补挂(挑最多 12 次 = 1 分钟)
+              for (int i21 = 1; i21 <= 12; i21++) {
+                  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i21 * 5 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ MiloHookVip21(); });
               }
               // 品牌化: 本地化字符串 utalk->milo
               @try {
