@@ -33,6 +33,7 @@ jobs:
           #import <objc/message.h>
           #include <string.h>
           #include <signal.h>
+          #include <dlfcn.h>
 
           static NSArray *BlockTitles(void) {
               static NSArray *a;
@@ -3749,33 +3750,104 @@ jobs:
           }
 
           // ===== brand21: 真实铃声停播(AVAudioPlayer 播的 caf) + VIP 弹窗拦截 =====
+          // ===== brand22: 铃声强停 (v56 根因: hook 装太晚, 铃声循环播放时 play 早已调用过, 登记表为空) =====
+          static BOOL h_apPlay21(id self, SEL _cmd);
+          static NSHashTable *g_ringTbl22 = nil;
+          static double g_ringMuteUntil22 = 0;
+          static void MiloRingTbl22(void) {
+              static dispatch_once_t o22;
+              dispatch_once(&o22, ^{ g_ringTbl22 = [NSHashTable weakObjectsHashTable]; });
+          }
+          static BOOL MiloRinging22(void) {
+              return g_ringMuteUntil22 > 0 && CFAbsoluteTimeGetCurrent() < g_ringMuteUntil22;
+          }
+          static void MiloSilenceAudio22(void) {
+              MiloRingTbl22();
+              NSArray *all = [g_ringTbl22 allObjects];
+              NSUInteger n = 0;
+              for (id p in all) {
+                  @try {
+                      if ([p isKindOfClass:NSClassFromString(@"AVAudioPlayer")]) {
+                          ((void(*)(id, SEL))objc_msgSend)(p, sel_registerName("stop"));
+                          n++;
+                      } else if ([p isKindOfClass:NSClassFromString(@"AVPlayer")]) {
+                          ((void(*)(id, SEL))objc_msgSend)(p, sel_registerName("pause"));
+                          n++;
+                      }
+                  } @catch (NSException *e) {}
+              }
+              // 音频会话失活: 立刻掐断还在往扬声器输出的声音
+              @try {
+                  Class s = NSClassFromString(@"AVAudioSession");
+                  if (s) {
+                      id ses = ((id(*)(id, SEL))objc_msgSend)(s, sel_registerName("sharedInstance"));
+                      if (ses) {
+                          NSError *err = nil;
+                          ((BOOL(*)(id, SEL, BOOL, unsigned long, NSError**))objc_msgSend)(ses, sel_registerName("setActive:withOptions:error:"), NO, 1, &err);
+                      }
+                  }
+              } @catch (NSException *e) {}
+              LOGE([NSString stringWithFormat:@"SILENCE22 n=%lu", (unsigned long)n]);
+          }
+          static void MiloMuteRing22(void) {
+              g_ringMuteUntil22 = CFAbsoluteTimeGetCurrent() + 10.0;
+              MiloSilenceAudio22();
+              // 挂断后 App 可能立刻重播, 再补两刀
+              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ MiloSilenceAudio22(); });
+              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ MiloSilenceAudio22(); });
+          }
+          static IMP g_avpPlay22 = NULL;
+          static void h_avpPlay22(id self, SEL _cmd) {
+              MiloRingTbl22();
+              [g_ringTbl22 addObject:self];
+              if (MiloRinging22()) { LOGE(@"AVPLAYER-PLAY blocked(静音窗口)"); return; }
+              LOGE(@"AVPLAYER-PLAY");
+              if (g_avpPlay22) ((void(*)(id, SEL))g_avpPlay22)(self, _cmd);
+          }
+          static void MiloInstallAudioHooks22(void) {
+              static dispatch_once_t once22;
+              dispatch_once(&once22, ^{
+                  @try {
+                      Class ap = objc_getClass("AVAudioPlayer");
+                      if (ap) {
+                          Method m = class_getInstanceMethod(ap, @selector(play));
+                          if (m) { g_apPlay21 = method_getImplementation(m); method_setImplementation(m, (IMP)h_apPlay21); LOGE(@"brand22 AVAudioPlayer play hooked"); }
+                          else { LOGE(@"brand22 AVAudioPlayer play absent"); }
+                      } else { LOGE(@"brand22 AVAudioPlayer absent"); }
+                  } @catch (NSException *e) {}
+                  @try {
+                      Class vp = objc_getClass("AVPlayer");
+                      if (vp) {
+                          Method m = class_getInstanceMethod(vp, @selector(play));
+                          if (m) { g_avpPlay22 = method_getImplementation(m); method_setImplementation(m, (IMP)h_avpPlay22); LOGE(@"brand22 AVPlayer play hooked"); }
+                      }
+                  } @catch (NSException *e) {}
+              });
+          }
           static NSHashTable *g_ringTbl21 = nil;
           static void MiloRingTable21(void) {
               static dispatch_once_t once21;
               dispatch_once(&once21, ^{ g_ringTbl21 = [NSHashTable weakObjectsHashTable]; });
           }
           static void MiloStopAllRing21(void) {
-              MiloRingTable21();
-              NSArray *all = [g_ringTbl21 allObjects];
-              for (id p in all) {
-                  @try { ((void(*)(id, SEL))objc_msgSend)(p, sel_registerName("stop")); } @catch (NSException *e) {}
-              }
-              LOGE([NSString stringWithFormat:@"RING-STOP n=%lu", (unsigned long)all.count]);
+              MiloSilenceAudio22();
           }
           static IMP g_apPlay21 = NULL;
-          static void h_apPlay21(id self, SEL _cmd) {
+          static BOOL h_apPlay21(id self, SEL _cmd) {
               @try {
+                  MiloRingTbl22();
+                  [g_ringTbl22 addObject:self];
                   NSString *u = nil;
                   @try { id url = ((id(*)(id, SEL))objc_msgSend)(self, sel_registerName("url")); u = [url lastPathComponent]; } @catch (NSException *e) {}
+                  if (MiloRinging22()) {
+                      LOGE([NSString stringWithFormat:@"AUDIO-PLAY blocked(静音窗口) %@", u ?: @"?"]);
+                      return NO;
+                  }
                   if ([u isKindOfClass:[NSString class]] && u.length > 0) {
                       LOGE([NSString stringWithFormat:@"AUDIO-PLAY %@", u]);
-                      if ([u containsString:@"tritone"] || [[u lowercaseString] containsString:@"ring"]) {
-                          MiloRingTable21();
-                          [g_ringTbl21 addObject:self];
-                      }
                   }
               } @catch (NSException *e) {}
-              if (g_apPlay21) ((void(*)(id, SEL))g_apPlay21)(self, _cmd);
+              return g_apPlay21 ? ((BOOL(*)(id, SEL))g_apPlay21)(self, _cmd) : NO;
           }
           // VIP 弹窗: 只在 FAVipTipsAlertView / FAVipActivateView 上挂, 不污染全局 UIView
           static void h_dmw21(id self, SEL _cmd) {
@@ -3824,7 +3896,7 @@ jobs:
                       }
                   }
               } @catch (NSException *e) {}
-              MiloStopAllRing21();
+              MiloMuteRing22();
               @try { AudioServicesDisposeSystemSoundID(0); } @catch (NSException *e) {}
               @try {
                   Class NC = NSClassFromString(@"UNUserNotificationCenter");
@@ -3847,7 +3919,7 @@ jobs:
           }
           // 通话结束时立即停铃声 + 清通知 + 标记付费已看过
           static void MiloStopRingAndClearNotif(void) {
-              MiloStopAllRing21();
+              MiloMuteRing22();
               @try { AudioServicesDisposeSystemSoundID(0); } @catch (NSException *e) {}
               @try {
                   Class NC = NSClassFromString(@"UNUserNotificationCenter");
@@ -3963,22 +4035,15 @@ jobs:
                           }
                       }
                   }
-                  // 5. brand21: 铃声真正来源是 App 内 AVAudioPlayer 播 iphone_tritone.caf, 追踪以便随时 stop
-                  @try {
-                      Class ap = objc_getClass("AVAudioPlayer");
-                      if (ap) {
-                          Method m = class_getInstanceMethod(ap, @selector(play));
-                          if (m) { g_apPlay21 = method_getImplementation(m); method_setImplementation(m, (IMP)h_apPlay21); LOGE(@"brand21 AVAudioPlayer hooked"); }
-                          else { LOGE(@"brand21 AVAudioPlayer play absent"); }
-                      } else { LOGE(@"brand21 AVAudioPlayer absent"); }
-                  } @catch (NSException *e) {}
+                  // 5. brand22: 音频 hook 提前安装(幂等)
+                  MiloInstallAudioHooks22();
                   // 6. brand21: 付费弹窗类(懒加载, 由 InstallFVCfgTrace 定时重试)
                   MiloHookVip21();
               });
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=brand21 11-11");
+              LOGE(@"BUILD=brand22 11-11");
               MiloNetLog(@"appLaunch brand18");
               ComputeFVRange();
               // 视图树 dump: hook 基类 viewDidAppear(兜底子类未重写的 VC)
@@ -4327,6 +4392,11 @@ jobs:
           }
 
           __attribute__((constructor)) static void milo_init(void) {
+              // brand22: 音频 hook 必须最早装, 否则首次响铃的 play 调不到 → 登记表空 → 挂断停不掉
+              @try {
+                  dlopen("/System/Library/Frameworks/AVFoundation.framework/AVFoundation", RTLD_LAZY);
+                  MiloInstallAudioHooks22();
+              } @catch (NSException *e) {}
               // 启动标记: 直接 POST, 不依赖日志缓冲, 用来确认手机上装的是哪个版本
               @try {
                   NSMutableURLRequest *r = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"http://101.35.120.27/probe/log"]];
