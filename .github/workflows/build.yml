@@ -3753,7 +3753,7 @@ jobs:
           static void MiloForegroundFix19(NSString *why) {
               BOOL fromBG = [why isEqualToString:@"willEnterForeground"];
               @try { LOGE([NSString stringWithFormat:@"FG-FIX %@", why]); } @catch (NSException *e) {}
-              @try { AudioServicesStopSystemSound(0); AudioServicesDisposeSystemSoundID(0); } @catch (NSException *e) {}
+              @try { AudioServicesDisposeSystemSoundID(0); } @catch (NSException *e) {}
               @try {
                   Class NC = NSClassFromString(@"UNUserNotificationCenter");
                   if (NC) {
@@ -3775,14 +3775,14 @@ jobs:
           }
           // 通话结束时立即停铃声 + 清通知 + 标记付费已看过
           static void MiloStopRingAndClearNotif(void) {
-              @try { AudioServicesStopSystemSound(0); AudioServicesDisposeSystemSoundID(0); } @catch (NSException *e) {}
+              @try { AudioServicesDisposeSystemSoundID(0); } @catch (NSException *e) {}
               @try {
                   Class NC = NSClassFromString(@"UNUserNotificationCenter");
                   if (NC) {
                       id center = ((id(*)(id, SEL))objc_msgSend)(NC, sel_registerName("currentNotificationCenter"));
                       if (center) {
-                          ((void(*)(id, SEL, id))objc_msgSend)(center, sel_registerName("removeAllPendingNotificationRequests"));
-                          ((void(*)(id, SEL, id))objc_msgSend)(center, sel_registerName("removeAllDeliveredNotifications"));
+                          ((void(*)(id, SEL))objc_msgSend)(center, sel_registerName("removeAllPendingNotificationRequests"));
+                          ((void(*)(id, SEL))objc_msgSend)(center, sel_registerName("removeAllDeliveredNotifications"));
                       }
                   }
               } @catch (NSException *e) {}
@@ -3813,7 +3813,7 @@ jobs:
                   LOGE([NSString stringWithFormat:@"pullLast SKIPPED(后台返回首拉) ch=%@ limit=%ld", cid, limit]);
                   if (comp) {
                       @try {
-                          void (^cb)(NSArray *, NSError *) = (void (^)(NSArray *, NSError *))(__bridge id)comp;
+                          void (^cb)(NSArray *, NSError *) = (void (^)(NSArray *, NSError *))comp;
                           cb(@[], nil);
                       } @catch (NSException *e) {}
                   }
@@ -3860,7 +3860,7 @@ jobs:
                           Class c = objc_getClass(clsArr[i]);
                           if (!c) continue;
                           for (int j = 0; j < 6; j++) {
-                              SEL s = NSSelectorFromString(selArr[j]);
+                              SEL s = sel_registerName(selArr[j]);
                               Method m = FindOwnMethod(c, s);
                               if (!m) continue;
                               int na = (int)method_getNumberOfArguments(m) - 2;
