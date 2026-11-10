@@ -288,7 +288,9 @@ jobs:
               LOGE([NSString stringWithFormat:@"SID23 dispose n=%d", n]);
           }
           static OSStatus Milo_CreateSSID(CFURLRef inFileURL, SystemSoundID *outSSID) {
-              OSStatus r = AudioServicesCreateSystemSoundID(inFileURL, outSSID);
+              static OSStatus (*realCreate)(CFURLRef, SystemSoundID*) = NULL;
+              if (!realCreate) realCreate = (OSStatus(*)(CFURLRef, SystemSoundID*))dlsym(RTLD_DEFAULT, "AudioServicesCreateSystemSoundID");
+              OSStatus r = realCreate ? realCreate(inFileURL, outSSID) : -1;
               @try {
                   NSString *path = nil;
                   if (inFileURL) path = [(__bridge NSURL *)inFileURL lastPathComponent];
@@ -298,8 +300,10 @@ jobs:
               return r;
           }
           static void Milo_DisposeSSID(SystemSoundID sid) {
+              static void (*realDispose)(SystemSoundID) = NULL;
+              if (!realDispose) realDispose = (void(*)(SystemSoundID))dlsym(RTLD_DEFAULT, "AudioServicesDisposeSystemSoundID");
               MiloUntrackSid23(sid);
-              AudioServicesDisposeSystemSoundID(sid);
+              if (realDispose) realDispose(sid);
           }
           __attribute__((used)) static struct { const void *repl; const void *orig; } _milo_interpose_audio[] __attribute__((section("__DATA,__interpose"))) = {
               { (const void *)Milo_CreateSSID, (const void *)AudioServicesCreateSystemSoundID },
@@ -4518,7 +4522,7 @@ jobs:
             -undefined dynamic_lookup \
             -fuse-ld="$LINKER" \
             -Wl,-platform_version,ios,14.0,14.0 \
-            -o MiloPatch.dylib hook.m 2>&1 | tail -25
+            -o MiloPatch.dylib hook.m 2>&1 | tail -60
           ls -la MiloPatch.dylib
 
       - name: Sign dylib
