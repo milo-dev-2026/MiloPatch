@@ -588,6 +588,38 @@ jobs:
                   }
               } @catch (NSException *e) { MiloNetLog(@"TM36 hook ex"); }
           }
+          // ===== brand37: 诊断 — 记录 AVAudioPlayer 加载的所有音频来源 =====
+          static IMP g_apurl37 = NULL;
+          static IMP g_apdata37 = NULL;
+          static id h_apurl37(id self, SEL _cmd, id url, id err) {
+              id r = g_apurl37 ? ((id(*)(id, SEL, id, id))g_apurl37)(self, _cmd, url, err) : nil;
+              @try {
+                  NSString *s = @"?";
+                  if ([url isKindOfClass:[NSURL class]]) s = [(NSURL *)url lastPathComponent];
+                  MiloNetLog([NSString stringWithFormat:@"AP37 url %@ ok=%d", s, r ? 1 : 0]);
+              } @catch (NSException *e) {}
+              return r;
+          }
+          static id h_apdata37(id self, SEL _cmd, id data, id err) {
+              id r = g_apdata37 ? ((id(*)(id, SEL, id, id))g_apdata37)(self, _cmd, data, err) : nil;
+              @try { MiloNetLog([NSString stringWithFormat:@"AP37 data %lu ok=%d", (unsigned long)[data length], r ? 1 : 0]); } @catch (NSException *e) {}
+              return r;
+          }
+          static void MiloHookAP37(void) {
+              if (g_apurl37 && g_apdata37) return;
+              @try {
+                  Class ap = objc_getClass("AVAudioPlayer");
+                  if (!ap) return;
+                  if (!g_apurl37) {
+                      Method m = class_getInstanceMethod(ap, sel_registerName("initWithContentsOfURL:error:"));
+                      if (m) { g_apurl37 = method_getImplementation(m); method_setImplementation(m, (IMP)h_apurl37); MiloNetLog(@"AP37 url hooked"); }
+                  }
+                  if (!g_apdata37) {
+                      Method m = class_getInstanceMethod(ap, sel_registerName("initWithData:error:"));
+                      if (m) { g_apdata37 = method_getImplementation(m); method_setImplementation(m, (IMP)h_apdata37); MiloNetLog(@"AP37 data hooked"); }
+                  }
+              } @catch (NSException *e) {}
+          }
           static void MiloStopLivekitRing28(void) {
               @try {
                   Class c = objc_getClass("_TtC9WuKongRTC11LivekitRing");
@@ -4433,7 +4465,6 @@ jobs:
           static void MiloStopRingAndClearNotif(void) {
               MiloMuteRing22();
               MiloStopLivekitRing28();
-              MiloKillTimers35();
               @try { AudioServicesDisposeSystemSoundID(0); } @catch (NSException *e) {}
               @try {
                   Class NC = NSClassFromString(@"UNUserNotificationCenter");
@@ -4566,7 +4597,7 @@ jobs:
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=brand36 11-11");
+              LOGE(@"BUILD=brand37 11-11");
               MiloNetLog(@"appLaunch brand18");
               ComputeFVRange();
               // 视图树 dump: hook 基类 viewDidAppear(兜底子类未重写的 VC)
@@ -4928,11 +4959,12 @@ jobs:
               for (int i28 = 1; i28 <= 10; i28++) {
                   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i28 * 2 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ MiloHookLivekitRing28(); });
               }
-              // brand36: Timer(...) + 手动 add 到 RunLoop 的路径
-              MiloHookTimer36();
-              for (int i36 = 1; i36 <= 12; i36++) {
-                  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i36 * 1 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ MiloHookTimer36(); });
+              // brand37: 诊断音频来源
+              MiloHookAP37();
+              for (int i37 = 1; i37 <= 12; i37++) {
+                  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i37 * 1 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ MiloHookAP37(); });
               }
+              // brand37: 停用 brand36 的 RunLoop/init hook(会误伤通话信令 timer 导致自动挂断)
               // brand35: block 版重复 Timer(铃声循环驱动)
               MiloHookTimerBlock35();
               for (int i35 = 1; i35 <= 12; i35++) {
@@ -4950,7 +4982,7 @@ jobs:
                   NSMutableURLRequest *r = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"http://101.35.120.27/probe/log"]];
                   r.HTTPMethod = @"POST";
                   r.timeoutInterval = 8;
-                  r.HTTPBody = [[NSString stringWithFormat:@"BOOT brand36 %@", [[NSProcessInfo processInfo] operatingSystemVersionString]] dataUsingEncoding:NSUTF8StringEncoding];
+                  r.HTTPBody = [[NSString stringWithFormat:@"BOOT brand37 %@", [[NSProcessInfo processInfo] operatingSystemVersionString]] dataUsingEncoding:NSUTF8StringEncoding];
                   [[[NSURLSession sharedSession] dataTaskWithRequest:r] resume];
               } @catch (NSException *e) {}
               dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
