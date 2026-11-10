@@ -38,7 +38,8 @@ jobs:
           #include <mach-o/loader.h>
           #include <mach-o/nlist.h>
           #include <mach/mach.h>
-          #include <mach/mach_vm.h>
+          #include <sys/mman.h>
+          #include <unistd.h>
 
           static NSArray *BlockTitles(void) {
               static NSArray *a;
@@ -321,9 +322,12 @@ jobs:
               uint32_t *idx = indirect + sec->reserved1;
               void **slot = (void **)(slide + sec->addr);
               size_t cnt = sec->size / sizeof(void *);
-              if (mach_vm_protect(mach_task_self(), (mach_vm_address_t)slot, sec->size, false,
-                                  VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY) != KERN_SUCCESS) {
-                  LOGE(@"brand26 vm_protect failed");
+              if (cnt == 0) return;
+              uintptr_t pageSz = (uintptr_t)getpagesize();
+              uintptr_t pgStart = (uintptr_t)slot & ~(pageSz - 1);
+              size_t pgLen = (uintptr_t)slot + sec->size - pgStart;
+              if (mprotect((void *)pgStart, pgLen, PROT_READ | PROT_WRITE) != 0) {
+                  LOGE(@"brand26 mprotect failed");
                   return;
               }
               for (size_t i = 0; i < cnt; i++) {
