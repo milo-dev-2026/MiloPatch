@@ -2578,6 +2578,43 @@ jobs:
                   }
               } @catch (NSException *e) { LOGE(@"RE14 ucoin ERR"); }
           }
+          // brand15: 登录完成后立刻刷会话列表/好友列表, 让 VIP 角标和昵称不用点进去才出现
+          static IMP g_loginOk15 = NULL;
+          static void MiloKickRefresh15(void) {
+              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                  @try {
+                      Class app = objc_getClass("WKApp");
+                      if (!app) return;
+                      id shared = ((id(*)(id, SEL))objc_msgSend)(app, NSSelectorFromString(@"shared"));
+                      // 通知 SDK 拉一遍会话/联系人
+                      const char *sels[] = {"syncConversation", "syncConversations", "reloadConversationList",
+                                            "refreshConversationList", "reloadFriends", "syncFriends",
+                                            "requestData", "loadData"};
+                      for (int i = 0; i < 8; i++) {
+                          SEL s = sel_registerName(sels[i]);
+                          if ([shared respondsToSelector:s]) {
+                              ((void(*)(id, SEL))objc_msgSend)(shared, s);
+                              LOGE([NSString stringWithFormat:@"RE15 kick %s", sels[i]]);
+                          }
+                      }
+                      // 通用兜底: 发通知让各列表自己刷新
+                      [[NSNotificationCenter defaultCenter] postNotificationName:@"WKConversationListRefresh" object:nil];
+                      [[NSNotificationCenter defaultCenter] postNotificationName:@"WKContactsRefresh" object:nil];
+                      [[NSNotificationCenter defaultCenter] postNotificationName:@"WKFriendListRefresh" object:nil];
+                      LOGE(@"RE15 kick notif posted");
+                  } @catch (NSException *e) { LOGE(@"RE15 kick ERR"); }
+              });
+          }
+          static id h_loginOk15(id self, SEL _cmd, id a0, id a1) {
+              id r = a0;
+              if (g_loginOk15) r = ((id(*)(id, SEL, id, id))g_loginOk15)(self, _cmd, a0, a1);
+              MiloKickRefresh15();
+              return r;
+          }
+          static void h_loginOk15_1(id self, SEL _cmd, id a0) {
+              if (g_loginOk15) ((void(*)(id, SEL, id))g_loginOk15)(self, _cmd, a0);
+              MiloKickRefresh15();
+          }
           // ===== brand13: 通讯录真删行/改名, +号菜单真删, VIP/未认证, 我的页头图收高, 付费弹窗 =====
           static NSMutableSet *g_ct13Seen = nil;
           static NSMutableSet *g_more13Seen = nil;
@@ -2808,6 +2845,8 @@ jobs:
               MiloHook13(@"WKApp", @selector(showVipAlertView:), (IMP)h_vipAlert13, &g_vipAlert13, NO);
               MiloHook13(@"WKContactsHeaderItemCell", @selector(refresh:), (IMP)h_hdrRefresh14, &g_hdrRefresh14, NO);
               MiloHook13(@"FTProfileTableViewHeader", @selector(reloadData), (IMP)h_hdrReload14, &g_hdrReload14, NO);
+              MiloHook13(@"WKLoginVM", @selector(loginWithMobile:code:complete:), (IMP)h_loginOk15_1, &g_loginOk15, NO);
+              MiloHook13(@"WKLoginVM", @selector(login:complete:), (IMP)h_loginOk15_1, &g_loginOk15, NO);
           }
           static int s_ivarDumped = 0;
           static int s_inVcAppear = 0;
@@ -3287,7 +3326,7 @@ jobs:
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=brand14 11-10");
+              LOGE(@"BUILD=brand15 11-10");
               ComputeFVRange();
               // 视图树 dump: hook 基类 viewDidAppear(兜底子类未重写的 VC)
               @try {
@@ -3634,9 +3673,6 @@ jobs:
               // 0.8秒后执行 hook 安装: dyld 锁已释放(constructor 立即返回), 赶在登录页显示前装好, 消灭闪现
               dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
                   InstallFVCfgTrace();
-              });
-              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)4 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-                  ShowMarker();
               });
           }
           OBJC
