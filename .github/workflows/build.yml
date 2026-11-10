@@ -2642,6 +2642,13 @@ jobs:
                       if ([v isKindOfClass:[UIView class]] && !v.hidden) bottom = MAX(bottom, CGRectGetMaxY(v.frame));
                   }
                   LOGE([NSString stringWithFormat:@"RE13 meHeader hid=%d h=%.0f bottom=%.0f", hid, hdr.frame.size.height, bottom]);
+                  static BOOL s_hdrDumped = NO;
+                  if (!s_hdrDumped) {
+                      s_hdrDumped = YES;
+                      for (UIView *sv in hdr.subviews) {
+                          LOGE([NSString stringWithFormat:@"RE13 hdrSub %@ (%.0f,%.0f,%.0f,%.0f)%@", NSStringFromClass([sv class]), sv.frame.origin.x, sv.frame.origin.y, sv.frame.size.width, sv.frame.size.height, sv.hidden ? @" hidden" : @""]);
+                      }
+                  }
                   CGFloat newH = bottom + 14.0;
                   if (bottom > 40 && newH + 1.0 < hdr.frame.size.height) {
                       CGRect f = hdr.frame;
