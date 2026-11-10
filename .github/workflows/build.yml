@@ -2150,6 +2150,223 @@ jobs:
                   LOGE([NSString stringWithFormat:@"tfdel hooked=%d", hooked]);
               } @catch (NSException *e) { LOGE(@"tfdel ERR"); }
           }
+          // ===== brand11: 依据 RE 头文件的数据源级精准裁剪 =====
+          // WKBaseTableVC._items = NSMutableArray<WKFormSection>, WKFormSection._items = NSArray<item>
+          // 我的页: WKMeVC(继承 WKBaseTableVC) / 通讯录: WKContactsVC / 设置: *SettingVC
+          static NSString *MiloStrProp(id o, NSString *key) {
+              @try {
+                  if ([o isKindOfClass:[NSDictionary class]]) {
+                      id v = [(NSDictionary *)o objectForKey:key];
+                      return [v isKindOfClass:[NSString class]] ? v : nil;
+                  }
+                  if ([o respondsToSelector:NSSelectorFromString(key)]) {
+                      id v = [o valueForKey:key];
+                      return [v isKindOfClass:[NSString class]] ? v : nil;
+                  }
+              } @catch (NSException *e) {}
+              return nil;
+          }
+          static NSString *MiloItemTitle(id it) {
+              if (!it) return nil;
+              for (NSString *k in @[@"label", @"title", @"name", @"cellTitle"]) {
+                  NSString *s = MiloStrProp(it, k);
+                  if (s.length) return s;
+              }
+              @try {
+                  unsigned int pc = 0;
+                  objc_property_t *ps = class_copyPropertyList([it class], &pc);
+                  if (ps) {
+                      for (unsigned int i = 0; i < pc; i++) {
+                          const char *nm = property_getName(ps[i]);
+                          if (!nm) continue;
+                          NSString *s = MiloStrProp(it, [NSString stringWithUTF8String:nm]);
+                          if (s.length) { free(ps); return s; }
+                      }
+                      free(ps);
+                  }
+              } @catch (NSException *e) {}
+              return nil;
+          }
+          static BOOL MiloBlockedTitle(NSString *t, NSSet *blocked) {
+              if (!t.length || !blocked) return NO;
+              for (NSString *w in blocked) {
+                  if ([t isEqualToString:w] || [t containsString:w]) return YES;
+              }
+              return NO;
+          }
+          static NSArray *MiloFilterItems(NSArray *items, NSSet *blocked, NSString *tag) {
+              NSMutableArray *keep = [NSMutableArray array];
+              for (id it in items) {
+                  NSString *t = MiloItemTitle(it);
+                  if (MiloBlockedTitle(t, blocked)) {
+                      LOGE([NSString stringWithFormat:@"RE11 drop(%@) \"%@\"", tag, t]);
+                      continue;
+                  }
+                  @try {
+                      id sub = [it respondsToSelector:@selector(items)] ? [it valueForKey:@"items"] : nil;
+                      if ([sub isKindOfClass:[NSArray class]] && [(NSArray *)sub count]) {
+                          NSArray *f = MiloFilterItems((NSArray *)sub, blocked, tag);
+                          if (f.count != [(NSArray *)sub count] && [it respondsToSelector:@selector(setItems:)]) {
+                              [it performSelector:@selector(setItems:) withObject:f];
+                          }
+                      }
+                  } @catch (NSException *e) {}
+                  [keep addObject:it];
+              }
+              return keep;
+          }
+          static NSArray *MiloFilterSections(NSArray *sections, NSSet *blocked, NSString *tag) {
+              NSMutableArray *out = [NSMutableArray array];
+              for (id sec in sections) {
+                  @try {
+                      id itemsObj = [sec respondsToSelector:@selector(items)] ? [sec valueForKey:@"items"] : nil;
+                      if (![itemsObj isKindOfClass:[NSArray class]]) { [out addObject:sec]; continue; }
+                      NSArray *f = MiloFilterItems((NSArray *)itemsObj, blocked, tag);
+                      if (f.count == [(NSArray *)itemsObj count]) { [out addObject:sec]; continue; }
+                      if (!f.count) { LOGE([NSString stringWithFormat:@"RE11 drop section(%@) title=%@", tag, MiloStrProp(sec, @"title") ?: @""]); continue; }
+                      if ([sec respondsToSelector:@selector(setItems:)]) [sec performSelector:@selector(setItems:) withObject:f];
+                      [out addObject:sec];
+                  } @catch (NSException *e) { [out addObject:sec]; }
+              }
+              return out;
+          }
+          static NSSet *MiloBlockedForVCClass(NSString *cls) {
+              if ([cls isEqualToString:@"WKMeVC"])
+                  return [NSSet setWithObjects:@"余额", @"我的道具", @"道具商城", @"会员中心", @"网页登录", @"分享邀请", nil];
+              if ([cls isEqualToString:@"WKContactsVC"])
+                  return [NSSet setWithObject:@"标签"];
+              if ([cls containsString:@"Setting"])
+                  return [NSSet setWithObject:@"域名配置"];
+              return nil;
+          }
+          static IMP g_setItemsOrig = NULL;
+          static void h_setItems(id self, SEL _cmd, id items) {
+              @try {
+                  NSSet *blocked = MiloBlockedForVCClass(NSStringFromClass([self class]));
+                  if (blocked && [items isKindOfClass:[NSArray class]]) {
+                      NSUInteger before = [(NSArray *)items count];
+                      items = MiloFilterSections((NSArray *)items, blocked, NSStringFromClass([self class]));
+                      if ([(NSArray *)items count] != before)
+                          LOGE([NSString stringWithFormat:@"RE11 %@ sections %lu -> %lu", NSStringFromClass([self class]),
+                                (unsigned long)before, (unsigned long)[(NSArray *)items count]]);
+                  }
+              } @catch (NSException *e) {}
+              ((void(*)(id, SEL, id))g_setItemsOrig)(self, _cmd, items);
+          }
+          // 我的页每次显示/刷新都会重算 items, 在 viewWillAppear 后再滤一次
+          static IMP g_baseViewWillAppearOrig = NULL;
+          static void h_baseViewWillAppear(id self, SEL _cmd, BOOL animated) {
+              ((void(*)(id, SEL, BOOL))g_baseViewWillAppearOrig)(self, _cmd, animated);
+              @try {
+                  NSSet *blocked = MiloBlockedForVCClass(NSStringFromClass([self class]));
+                  if (!blocked) return;
+                  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                      @try {
+                          id arr = [self valueForKey:@"items"];
+                          if (![arr isKindOfClass:[NSArray class]]) return;
+                          NSArray *f = MiloFilterSections((NSArray *)arr, blocked, NSStringFromClass([self class]));
+                          if (f.count != [(NSArray *)arr count]) {
+                              [self setValue:f forKey:@"items"];
+                              id tv = [self valueForKey:@"tableView"];
+                              if ([tv respondsToSelector:@selector(reloadData)]) [tv performSelector:@selector(reloadData)];
+                          }
+                      } @catch (NSException *e) {}
+                  });
+              } @catch (NSException *e) {}
+          }
+          // +号菜单: WKMorePanel2._moreItems 里剔除「座席管理」
+          static IMP g_moreItemsOrig = NULL;
+          static void h_setMoreItems(id self, SEL _cmd, id arr) {
+              @try {
+                  if ([arr isKindOfClass:[NSArray class]]) {
+                      NSMutableArray *keep = [NSMutableArray array];
+                      for (id it in (NSArray *)arr) {
+                          NSString *t = MiloItemTitle(it);
+                          if (t && ([t containsString:@"座席"] || [t containsString:@"作息"])) {
+                              LOGE([NSString stringWithFormat:@"RE11 drop moreItem \"%@\"", t]);
+                              continue;
+                          }
+                          [keep addObject:it];
+                      }
+                      arr = keep;
+                  }
+              } @catch (NSException *e) {}
+              ((void(*)(id, SEL, id))g_moreItemsOrig)(self, _cmd, arr);
+          }
+          // 聊天输入栏左侧菜单(两个横杠): WKConversationInputPanel._menusBtn
+          static IMP g_showMenusOrig = NULL;
+          static void h_setShowMenus(id self, SEL _cmd, BOOL v) {
+              ((void(*)(id, SEL, BOOL))g_showMenusOrig)(self, _cmd, NO);
+          }
+          static IMP g_menusBtnOrig = NULL;
+          static id h_menusBtn(id self, SEL _cmd) {
+              id v = ((id(*)(id, SEL))g_menusBtnOrig)(self, _cmd);
+              if ([v isKindOfClass:[UIView class]]) { [(UIView *)v setHidden:YES]; }
+              return v;
+          }
+          // 关于我们页 logo: FAAboutAppVC tableViewHeader -> 换成正方形 milo
+          static IMP g_aboutHeaderOrig = NULL;
+          static id h_aboutHeader(id self, SEL _cmd) {
+              id v = ((id(*)(id, SEL))g_aboutHeaderOrig)(self, _cmd);
+              @try {
+                  UIImage *sq = MiloLogoSquareImg();
+                  if (sq && [v isKindOfClass:[UIView class]]) {
+                      NSMutableArray *stack = [NSMutableArray arrayWithObject:v];
+                      int n = 0, swapped = 0;
+                      while (stack.count && n < 80) {
+                          UIView *sv = [stack lastObject]; [stack removeLastObject]; n++;
+                          if ([sv isKindOfClass:[UIImageView class]]) {
+                              ((UIImageView *)sv).image = sq;
+                              swapped++;
+                          }
+                          for (UIView *c in sv.subviews) [stack addObject:c];
+                      }
+                      LOGE([NSString stringWithFormat:@"RE11 about header imgs=%d", swapped]);
+                  }
+              } @catch (NSException *e) {}
+              return v;
+          }
+          static void MiloLateHooks(void) {
+              @try {
+                  if (!g_setItemsOrig) {
+                      Class c = NSClassFromString(@"WKBaseTableVC");
+                      Method m = c ? FindOwnMethod(c, @selector(setItems:)) : NULL;
+                      if (m) { g_setItemsOrig = method_getImplementation(m); method_setImplementation(m, (IMP)h_setItems); LOGE(@"RE11 hook setItems"); }
+                  }
+                  if (!g_baseViewWillAppearOrig) {
+                      Class c = NSClassFromString(@"WKBaseTableVC");
+                      Method m = c ? FindOwnMethod(c, @selector(viewWillAppear:)) : NULL;
+                      if (m) {
+                          IMP cur = method_getImplementation(m);
+                          if (cur != (IMP)h_baseViewWillAppear) {
+                              g_baseViewWillAppearOrig = cur;
+                              method_setImplementation(m, (IMP)h_baseViewWillAppear);
+                              LOGE(@"RE11 hook viewWillAppear");
+                          }
+                      }
+                  }
+                  if (!g_moreItemsOrig) {
+                      Class c = NSClassFromString(@"WKMorePanel2");
+                      Method m = c ? FindOwnMethod(c, @selector(setMoreItems:)) : NULL;
+                      if (m) { g_moreItemsOrig = method_getImplementation(m); method_setImplementation(m, (IMP)h_setMoreItems); LOGE(@"RE11 hook moreItems"); }
+                  }
+                  if (!g_showMenusOrig) {
+                      Class c = NSClassFromString(@"WKConversationInputPanel");
+                      Method m = c ? FindOwnMethod(c, @selector(setShowMenusBtn:)) : NULL;
+                      if (m) { g_showMenusOrig = method_getImplementation(m); method_setImplementation(m, (IMP)h_setShowMenus); LOGE(@"RE11 hook showMenusBtn"); }
+                  }
+                  if (!g_menusBtnOrig) {
+                      Class c = NSClassFromString(@"WKConversationInputPanel");
+                      Method m = c ? FindOwnMethod(c, @selector(menusBtn)) : NULL;
+                      if (m) { g_menusBtnOrig = method_getImplementation(m); method_setImplementation(m, (IMP)h_menusBtn); LOGE(@"RE11 hook menusBtn"); }
+                  }
+                  if (!g_aboutHeaderOrig) {
+                      Class c = NSClassFromString(@"FAAboutAppVC");
+                      Method m = c ? FindOwnMethod(c, @selector(tableViewHeader)) : NULL;
+                      if (m) { g_aboutHeaderOrig = method_getImplementation(m); method_setImplementation(m, (IMP)h_aboutHeader); LOGE(@"RE11 hook aboutHeader"); }
+                  }
+              } @catch (NSException *e) { LOGE(@"RE11 install ERR"); }
+          }
           static int s_ivarDumped = 0;
           static int s_inVcAppear = 0;
           static void h_vc_appear(id self, SEL _cmd, BOOL anim) {
@@ -2628,7 +2845,7 @@ jobs:
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=brand10 11-10");
+              LOGE(@"BUILD=brand11 11-40");
               ComputeFVRange();
               // 视图树 dump: hook 基类 viewDidAppear(兜底子类未重写的 VC)
               @try {
@@ -2652,6 +2869,9 @@ jobs:
               HookTFDelegate();
               dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ HookTFDelegate(); });
               dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ HookTFDelegate(); });
+              // brand11: 依据 RE 的精准数据源裁剪(我的页/通讯录/设置/+号菜单/输入栏菜单/关于我们)
+              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ MiloLateHooks(); });
+              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ MiloLateHooks(); });
               // 精准 UI: 登录 logo 替换(imageNamed 命中 LaunchIcon)
               @try {
                   Method m = class_getClassMethod([UIImage class], @selector(imageNamed:));
