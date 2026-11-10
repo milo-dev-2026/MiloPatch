@@ -35,52 +35,6 @@ jobs:
           #include <signal.h>
           #include <dlfcn.h>
 
-          // ===== brand23: 铃声真正走 AudioServicesCreateSystemSoundID (.caf 循环播放), 必须拿到真实 sid =====
-          #define MILO_MAX_SID 32
-          static SystemSoundID g_sids23[MILO_MAX_SID];
-          static int g_sidCnt23 = 0;
-          static void MiloTrackSid23(SystemSoundID sid) {
-              if (sid == 0) return;
-              for (int i = 0; i < g_sidCnt23; i++) if (g_sids23[i] == sid) return;
-              if (g_sidCnt23 < MILO_MAX_SID) g_sids23[g_sidCnt23++] = sid;
-          }
-          static void MiloUntrackSid23(SystemSoundID sid) {
-              for (int i = 0; i < g_sidCnt23; i++) {
-                  if (g_sids23[i] == sid) {
-                      g_sids23[i] = g_sids23[--g_sidCnt23];
-                      return;
-                  }
-              }
-          }
-          static void MiloDisposeAllSids23(void) {
-              int n = g_sidCnt23;
-              for (int i = 0; i < n; i++) {
-                  SystemSoundID sid = g_sids23[i];
-                  @try { AudioServicesStopSystemSound(sid); } @catch (NSException *e) {}
-                  @try { AudioServicesDisposeSystemSoundID(sid); } @catch (NSException *e) {}
-              }
-              g_sidCnt23 = 0;
-              LOGE([NSString stringWithFormat:@"SID23 dispose n=%d", n]);
-          }
-          static OSStatus Milo_CreateSSID(CFURLRef inFileURL, SystemSoundID *outSSID) {
-              OSStatus r = AudioServicesCreateSystemSoundID(inFileURL, outSSID);
-              @try {
-                  NSString *path = nil;
-                  if (inFileURL) path = [(__bridge NSURL *)inFileURL lastPathComponent];
-                  LOGE([NSString stringWithFormat:@"SSID-CREATE ret=%ld sid=%u url=%@", (long)r, outSSID ? *outSSID : 0, path ?: @""]);
-                  if (r == 0 && outSSID) MiloTrackSid23(*outSSID);
-              } @catch (NSException *e) {}
-              return r;
-          }
-          static void Milo_DisposeSSID(SystemSoundID sid) {
-              MiloUntrackSid23(sid);
-              AudioServicesDisposeSystemSoundID(sid);
-          }
-          __attribute__((used)) static struct { const void *repl; const void *orig; } _milo_interpose_audio[] __attribute__((section("__DATA,__interpose"))) = {
-              { (const void *)Milo_CreateSSID, (const void *)AudioServicesCreateSystemSoundID },
-              { (const void *)Milo_DisposeSSID, (const void *)AudioServicesDisposeSystemSoundID },
-          };
-
           static NSArray *BlockTitles(void) {
               static NSArray *a;
               static dispatch_once_t once;
@@ -309,6 +263,48 @@ jobs:
               [g_lock unlock];
               if (n >= 8) Flush();
           }
+          // ===== brand23: 铃声真正走 AudioServicesCreateSystemSoundID (.caf 循环播放), 必须拿到真实 sid =====
+          #define MILO_MAX_SID 32
+          static SystemSoundID g_sids23[MILO_MAX_SID];
+          static int g_sidCnt23 = 0;
+          static void MiloTrackSid23(SystemSoundID sid) {
+              if (sid == 0) return;
+              for (int i = 0; i < g_sidCnt23; i++) if (g_sids23[i] == sid) return;
+              if (g_sidCnt23 < MILO_MAX_SID) g_sids23[g_sidCnt23++] = sid;
+          }
+          static void MiloUntrackSid23(SystemSoundID sid) {
+              for (int i = 0; i < g_sidCnt23; i++) {
+                  if (g_sids23[i] == sid) { g_sids23[i] = g_sids23[--g_sidCnt23]; return; }
+              }
+          }
+          static void MiloDisposeAllSids23(void) {
+              int n = g_sidCnt23;
+              for (int i = 0; i < n; i++) {
+                  SystemSoundID sid = g_sids23[i];
+                  @try { AudioServicesStopSystemSound(sid); } @catch (NSException *e) {}
+                  @try { AudioServicesDisposeSystemSoundID(sid); } @catch (NSException *e) {}
+              }
+              g_sidCnt23 = 0;
+              LOGE([NSString stringWithFormat:@"SID23 dispose n=%d", n]);
+          }
+          static OSStatus Milo_CreateSSID(CFURLRef inFileURL, SystemSoundID *outSSID) {
+              OSStatus r = AudioServicesCreateSystemSoundID(inFileURL, outSSID);
+              @try {
+                  NSString *path = nil;
+                  if (inFileURL) path = [(__bridge NSURL *)inFileURL lastPathComponent];
+                  LOGE([NSString stringWithFormat:@"SSID-CREATE ret=%ld sid=%u url=%@", (long)r, outSSID ? *outSSID : 0, path ?: @""]);
+                  if (r == 0 && outSSID) MiloTrackSid23(*outSSID);
+              } @catch (NSException *e) {}
+              return r;
+          }
+          static void Milo_DisposeSSID(SystemSoundID sid) {
+              MiloUntrackSid23(sid);
+              AudioServicesDisposeSystemSoundID(sid);
+          }
+          __attribute__((used)) static struct { const void *repl; const void *orig; } _milo_interpose_audio[] __attribute__((section("__DATA,__interpose"))) = {
+              { (const void *)Milo_CreateSSID, (const void *)AudioServicesCreateSystemSoundID },
+              { (const void *)Milo_DisposeSSID, (const void *)AudioServicesDisposeSystemSoundID },
+          };
           static void ScheduleFlush(void) {
               dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)2 * NSEC_PER_SEC), dispatch_get_global_queue(0, 0), ^{
                   Flush();
