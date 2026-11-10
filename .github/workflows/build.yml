@@ -3752,6 +3752,7 @@ jobs:
           // ===== brand21: 真实铃声停播(AVAudioPlayer 播的 caf) + VIP 弹窗拦截 =====
           // ===== brand22: 铃声强停 (v56 根因: hook 装太晚, 铃声循环播放时 play 早已调用过, 登记表为空) =====
           static BOOL h_apPlay21(id self, SEL _cmd);
+          static IMP g_apPlay21 = NULL;
           static NSHashTable *g_ringTbl22 = nil;
           static double g_ringMuteUntil22 = 0;
           static void MiloRingTbl22(void) {
@@ -3832,7 +3833,6 @@ jobs:
           static void MiloStopAllRing21(void) {
               MiloSilenceAudio22();
           }
-          static IMP g_apPlay21 = NULL;
           static BOOL h_apPlay21(id self, SEL _cmd) {
               @try {
                   MiloRingTbl22();
