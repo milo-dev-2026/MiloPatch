@@ -287,28 +287,8 @@ jobs:
               g_sidCnt23 = 0;
               LOGE([NSString stringWithFormat:@"SID23 dispose n=%d", n]);
           }
-          static OSStatus Milo_CreateSSID(CFURLRef inFileURL, SystemSoundID *outSSID) {
-              static OSStatus (*realCreate)(CFURLRef, SystemSoundID*) = NULL;
-              if (!realCreate) realCreate = (OSStatus(*)(CFURLRef, SystemSoundID*))dlsym(RTLD_DEFAULT, "AudioServicesCreateSystemSoundID");
-              OSStatus r = realCreate ? realCreate(inFileURL, outSSID) : -1;
-              @try {
-                  NSString *path = nil;
-                  if (inFileURL) path = [(__bridge NSURL *)inFileURL lastPathComponent];
-                  LOGE([NSString stringWithFormat:@"SSID-CREATE ret=%ld sid=%u url=%@", (long)r, outSSID ? *outSSID : 0, path ?: @""]);
-                  if (r == 0 && outSSID) MiloTrackSid23(*outSSID);
-              } @catch (NSException *e) {}
-              return r;
-          }
-          static void Milo_DisposeSSID(SystemSoundID sid) {
-              static void (*realDispose)(SystemSoundID) = NULL;
-              if (!realDispose) realDispose = (void(*)(SystemSoundID))dlsym(RTLD_DEFAULT, "AudioServicesDisposeSystemSoundID");
-              MiloUntrackSid23(sid);
-              if (realDispose) realDispose(sid);
-          }
-          __attribute__((used)) static struct { const void *repl; const void *orig; } _milo_interpose_audio[] __attribute__((section("__DATA,__interpose"))) = {
-              { (const void *)Milo_CreateSSID, (const void *)AudioServicesCreateSystemSoundID },
-              { (const void *)Milo_DisposeSSID, (const void *)AudioServicesDisposeSystemSoundID },
-          };
+          // brand25: 移除 __DATA,__interpose(在 dylib 里 interpose 系统库无效且是崩溃风险源),
+          // 也移除 C 函数级 hook, 只保留 AVAudioPlayer/AVPlayer 对象级停止
           static void ScheduleFlush(void) {
               dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)2 * NSEC_PER_SEC), dispatch_get_global_queue(0, 0), ^{
                   Flush();
@@ -3823,17 +3803,7 @@ jobs:
                       }
                   } @catch (NSException *e) {}
               }
-              // 音频会话失活: 立刻掐断还在往扬声器输出的声音
-              @try {
-                  Class s = NSClassFromString(@"AVAudioSession");
-                  if (s) {
-                      id ses = ((id(*)(id, SEL))objc_msgSend)(s, sel_registerName("sharedInstance"));
-                      if (ses) {
-                          NSError *err = nil;
-                          ((BOOL(*)(id, SEL, BOOL, unsigned long, NSError**))objc_msgSend)(ses, sel_registerName("setActive:withOptions:error:"), NO, 1, &err);
-                      }
-                  }
-              } @catch (NSException *e) {}
+              // brand25: 不再强制 AVAudioSession setActive:NO —— 通话建立/结束时会打断 WebRTC 音频单元, 导致闪退
               LOGE([NSString stringWithFormat:@"SILENCE22 n=%lu", (unsigned long)n]);
           }
           static void MiloMuteRing22(void) {
@@ -3932,8 +3902,9 @@ jobs:
                   NSString *cls = NSStringFromClass(object_getClass(v));
                   if ([cls hasPrefix:@"FAVip"]) {
                       LOGE([NSString stringWithFormat:@"VIP-SWEEP hide %@", cls]);
+                      // brand25: 只隐藏, 不 removeFromSuperview(移除可能破坏布局导致闪退)
                       ((void(*)(id, SEL, BOOL))objc_msgSend)(v, sel_registerName("setHidden:"), YES);
-                      ((void(*)(id, SEL))objc_msgSend)(v, sel_registerName("removeFromSuperview"));
+                      ((void(*)(id, SEL, double))objc_msgSend)(v, sel_registerName("setAlpha:"), 0.0);
                       return;
                   }
                   NSArray *subs = ((id(*)(id, SEL))objc_msgSend)(v, sel_registerName("subviews"));
@@ -3943,8 +3914,8 @@ jobs:
           static void MiloStartVipSweep24(void) {
               if (g_vipSweep24) return;
               g_vipSweep24 = 1;
-              for (int i = 1; i <= 20; i++) {
-                  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i * 2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+              for (int i = 1; i <= 10; i++) {
+                  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i * 3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                       @try {
                           Class appCls = objc_getClass("UIApplication");
                           id app = ((id(*)(id, SEL))objc_msgSend)(appCls, sel_registerName("sharedApplication"));
@@ -4145,7 +4116,7 @@ jobs:
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=brand24 11-11");
+              LOGE(@"BUILD=brand25 11-11");
               MiloNetLog(@"appLaunch brand18");
               ComputeFVRange();
               // 视图树 dump: hook 基类 viewDidAppear(兜底子类未重写的 VC)
