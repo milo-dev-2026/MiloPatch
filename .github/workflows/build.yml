@@ -34,7 +34,6 @@ jobs:
           #include <string.h>
           #include <signal.h>
           #include <dlfcn.h>
-          extern OSStatus AudioServicesStopSystemSound(SystemSoundID inSystemSoundID);
 
           static NSArray *BlockTitles(void) {
               static NSArray *a;
@@ -282,7 +281,7 @@ jobs:
               int n = g_sidCnt23;
               for (int i = 0; i < n; i++) {
                   SystemSoundID sid = g_sids23[i];
-                  @try { AudioServicesStopSystemSound(sid); } @catch (NSException *e) {}
+                  // iOS 没有 AudioServicesStopSystemSound(macOS 才有), 只能 dispose 来终止播放
                   @try { AudioServicesDisposeSystemSoundID(sid); } @catch (NSException *e) {}
               }
               g_sidCnt23 = 0;
@@ -3925,6 +3924,41 @@ jobs:
                   }
               }
           }
+          // brand24: VIP 弹窗兜底 —— 定时递归扫描视图树, 见到 FAVip 前缀直接隐藏并移除
+          static int g_vipSweep24 = 0;
+          static void MiloSweepVip24(id v) {
+              if (!v) return;
+              @try {
+                  NSString *cls = NSStringFromClass(object_getClass(v));
+                  if ([cls hasPrefix:@"FAVip"]) {
+                      LOGE([NSString stringWithFormat:@"VIP-SWEEP hide %@", cls]);
+                      ((void(*)(id, SEL, BOOL))objc_msgSend)(v, sel_registerName("setHidden:"), YES);
+                      ((void(*)(id, SEL))objc_msgSend)(v, sel_registerName("removeFromSuperview"));
+                      return;
+                  }
+                  NSArray *subs = ((id(*)(id, SEL))objc_msgSend)(v, sel_registerName("subviews"));
+                  for (id s in subs) MiloSweepVip24(s);
+              } @catch (NSException *e) {}
+          }
+          static void MiloStartVipSweep24(void) {
+              if (g_vipSweep24) return;
+              g_vipSweep24 = 1;
+              for (int i = 1; i <= 20; i++) {
+                  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i * 2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                      @try {
+                          Class appCls = objc_getClass("UIApplication");
+                          id app = ((id(*)(id, SEL))objc_msgSend)(appCls, sel_registerName("sharedApplication"));
+                          NSArray *wins = ((id(*)(id, SEL))objc_msgSend)(app, sel_registerName("windows"));
+                          for (id w in wins) {
+                              id root = ((id(*)(id, SEL))objc_msgSend)(w, sel_registerName("rootViewController"));
+                              id view = root ? ((id(*)(id, SEL))objc_msgSend)(root, sel_registerName("view")) : nil;
+                              MiloSweepVip24(view);
+                              MiloSweepVip24(w);
+                          }
+                      } @catch (NSException *e) {}
+                  });
+              }
+          }
           // ===== brand19: 后台/未读/通话铃声/付费弹窗 =====
           // brand23: 后台来电返回前台时, 通话窗口可能被隐藏/非 key, 重新拉起
           static void MiloRecoverCallWindow23(void) {
@@ -3941,16 +3975,7 @@ jobs:
                       BOOL key = NO;
                       @try { key = ((BOOL(*)(id, SEL))objc_msgSend)(w, sel_registerName("isKeyWindow")); } @catch (NSException *e) {}
                       LOGE([NSString stringWithFormat:@"WIN23 %@ hidden=%d key=%d", cls, hidden, key]);
-                      NSRange r = [cls rangeOfString:@"Call" options:NSCaseInsensitiveSearch];
-                      NSRange r2 = [cls rangeOfString:@"RTC" options:NSCaseInsensitiveSearch];
-                      NSRange r3 = [cls rangeOfString:@"Ring" options:NSCaseInsensitiveSearch];
-                      NSRange r4 = [cls rangeOfString:@"Accept" options:NSCaseInsensitiveSearch];
-                      NSRange r5 = [cls rangeOfString:@"Incoming" options:NSCaseInsensitiveSearch];
-                      if (r.location != NSNotFound || r2.location != NSNotFound || r3.location != NSNotFound || r4.location != NSNotFound || r5.location != NSNotFound) {
-                          LOGE([NSString stringWithFormat:@"CALL-WIN23 found %@ -> makeKeyAndVisible", cls]);
-                          @try { ((void(*)(id, SEL, BOOL))objc_msgSend)(w, sel_registerName("setHidden:"), NO); } @catch (NSException *e) {}
-                          @try { ((void(*)(id, SEL))objc_msgSend)(w, sel_registerName("makeKeyAndVisible")); } @catch (NSException *e) {}
-                      }
+                      // brand24: 不再强行 makeKeyAndVisible(会打乱 RTC 视图层级导致闪退), 只记录
                   }
               } @catch (NSException *e) {}
           }
@@ -4120,7 +4145,7 @@ jobs:
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=brand23 11-11");
+              LOGE(@"BUILD=brand24 11-11");
               MiloNetLog(@"appLaunch brand18");
               ComputeFVRange();
               // 视图树 dump: hook 基类 viewDidAppear(兜底子类未重写的 VC)
@@ -4192,6 +4217,8 @@ jobs:
               for (int i21 = 1; i21 <= 12; i21++) {
                   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i21 * 5 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ MiloHookVip21(); });
               }
+              // brand24: VIP 弹窗兜底扫描(类名 FAVip* 直接隐藏+移除)
+              MiloStartVipSweep24();
               // 品牌化: 本地化字符串 utalk->milo
               @try {
                   Method ml = class_getInstanceMethod([NSBundle class], @selector(localizedStringForKey:value:table:));
