@@ -34,6 +34,7 @@ jobs:
           #include <string.h>
           #include <signal.h>
           #include <dlfcn.h>
+          extern OSStatus AudioServicesStopSystemSound(SystemSoundID inSystemSoundID);
 
           static NSArray *BlockTitles(void) {
               static NSArray *a;
