@@ -249,9 +249,11 @@ jobs:
           static void Flush(void);
           static BOOL RunLogWorthy(NSString *s);
           static void RunLogWrite(NSString *s);
+          static void MiloEnsureLogBuf(void);
           static void LOGE(NSString *s) {
               NSLog(@"[MILOPROBE] %@", s);
               if (RunLogWorthy(s)) RunLogWrite(s);
+              MiloEnsureLogBuf();
               if (!g_lock) return;
               [g_lock lock];
               [g_buf addObject:s];
@@ -262,6 +264,16 @@ jobs:
           static void ScheduleFlush(void) {
               dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)2 * NSEC_PER_SEC), dispatch_get_global_queue(0, 0), ^{
                   Flush();
+                  ScheduleFlush();
+              });
+          }
+          // 惰性初始化日志缓冲: 早期(0.8s 安装 hook 阶段)就要能打日志
+          static void MiloEnsureLogBuf(void) {
+              if (g_lock) return;
+              static dispatch_once_t onceBuf;
+              dispatch_once(&onceBuf, ^{
+                  g_buf = [NSMutableArray array];
+                  g_lock = [NSLock new];
                   ScheduleFlush();
               });
           }
@@ -2527,19 +2539,9 @@ jobs:
           }
           // ===== brand17: 远程日志 + 本地通知/提示音 =====
           static void MiloNetLog(NSString *k) {
+              // 走已验证可用的 LOGE 批量通道(POST /probe/log -> 8093 -> /var/log/milo_probe.log)
               if (![k isKindOfClass:[NSString class]]) return;
-              @try {
-                  NSMutableCharacterSet *cs = [NSMutableCharacterSet alphanumericCharacterSet];
-                  [cs addCharactersInString:@"-_."];
-                  NSString *enc = [k stringByAddingPercentEncodingWithAllowedCharacters:cs];
-                  if (!enc) return;
-                  NSString *u = [NSString stringWithFormat:@"http://101.35.120.27/zzprobe?b=brand17&k=%@", enc];
-                  NSMutableURLRequest *r = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:u]];
-                  r.timeoutInterval = 6;
-                  [r setValue:@"probe.milo.local" forHTTPHeaderField:@"Host"];
-                  NSURLSessionDataTask *t = [[NSURLSession sharedSession] dataTaskWithRequest:r completionHandler:^(NSData *d, NSURLResponse *resp, NSError *e) {}];
-                  [t resume];
-              } @catch (NSException *e) {}
+              @try { LOGE(k); } @catch (NSException *e) {}
           }
           // 递归查找 WKContactsVC 并触发 requestData(等价于用户点一下好友页)
           static int MiloScanVC17(id vc, int depth) {
@@ -2602,13 +2604,22 @@ jobs:
           static void MiloRequestNotifyAuth(void) {
               static dispatch_once_t once;
               dispatch_once(&once, ^{
-                  @try {
-                      Class NC = NSClassFromString(@"UNUserNotificationCenter");
-                      if (!NC) return;
-                      id center = ((id(*)(id, SEL))objc_msgSend)(NC, sel_registerName("currentNotificationCenter"));
-                      ((void(*)(id, SEL, unsigned long long, id))objc_msgSend)(center, sel_registerName("requestAuthorizationWithOptions:completionHandler:"), (unsigned long long)7, nil);
-                      MiloNetLog(@"notifyAuthRequested");
-                  } @catch (NSException *e) {}
+                  // 延迟到 3s 且必须带非空 completionHandler(传 nil 会在授权回调时崩)
+                  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                      @try {
+                          Class NC = NSClassFromString(@"UNUserNotificationCenter");
+                          if (!NC) return;
+                          SEL cs = sel_registerName("currentNotificationCenter");
+                          SEL rq = sel_registerName("requestAuthorizationWithOptions:completionHandler:");
+                          if (![NC respondsToSelector:cs]) return;
+                          id center = ((id(*)(id, SEL))objc_msgSend)(NC, cs);
+                          if (!center || ![center respondsToSelector:rq]) return;
+                          void (^done)(BOOL, NSError *) = ^(BOOL ok, NSError *err) {
+                              @try { LOGE([NSString stringWithFormat:@"notifyAuth ok=%d err=%@", (int)ok, err.localizedDescription ?: @"-"]); } @catch (NSException *e) {}
+                          };
+                          ((void(*)(id, SEL, unsigned long long, id))objc_msgSend)(center, rq, (unsigned long long)7, done);
+                      } @catch (NSException *e) { LOGE(@"notifyAuth ERR"); }
+                  });
               });
           }
           // 系统账号那行后面挂 UTalk 原版蓝勾认证徽章(AvatarUTalkBadge)
@@ -2677,7 +2688,6 @@ jobs:
               } @catch (NSException *e) { LOGE(@"RE14 ucoin ERR"); }
           }
           // brand15: 登录完成后立刻刷会话列表/好友列表, 让 VIP 角标和昵称不用点进去才出现
-          static IMP g_loginOk15 = NULL;
           static void MiloKickRefresh15(void) {
               dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                   @try {
@@ -2736,15 +2746,20 @@ jobs:
                   } @catch (NSException *e) { MiloNetLog(@"nick ERR"); }
               });
           }
-          static id h_loginOk15(id self, SEL _cmd, id a0, id a1) {
-              id r = a0;
-              if (g_loginOk15) r = ((id(*)(id, SEL, id, id))g_loginOk15)(self, _cmd, a0, a1);
-              MiloKickRefresh15();
-              return r;
-          }
-          static void h_loginOk15_1(id self, SEL _cmd, id a0) {
-              if (g_loginOk15) ((void(*)(id, SEL, id))g_loginOk15)(self, _cmd, a0);
-              MiloKickRefresh15();
+          // 登录成功后刷新: 用系统通知(notify.login.success)触发, 不再 hook 不存在的 WKLoginVM 方法
+          static void MiloWatchLoginNoti15(void) {
+              static dispatch_once_t once;
+              dispatch_once(&once, ^{
+                  @try {
+                      NSArray *names = @[@"notify.login.success", @"login.success"];
+                      for (NSString *n in names) {
+                          [[NSNotificationCenter defaultCenter] addObserverForName:n object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *note) {
+                              @try { LOGE(@"login success noti"); } @catch (NSException *e) {}
+                              MiloKickRefresh15();
+                          }];
+                      }
+                  } @catch (NSException *e) {}
+              });
           }
           // ===== brand13: 通讯录真删行/改名, +号菜单真删, VIP/未认证, 我的页头图收高, 付费弹窗 =====
           static NSMutableSet *g_ct13Seen = nil;
@@ -3182,35 +3197,42 @@ jobs:
               MiloRtcHandleEnd17(self, "dismiss");
               if (g_dismiss16) ((void(*)(id, SEL, id))g_dismiss16)(self, _cmd, arg0);
           }
-          static IMP g_invokeA17 = NULL;
-          static IMP g_invokeB17 = NULL;
-          static id MiloLogApi17(id ep, id param) {
+          // 登录按钮埋点: 确认"点登录无反应"卡在 UI 还是网络
+          static IMP g_loginBtn18 = NULL;
+          static void h_loginBtnTap18A(id self, SEL _cmd, id a) {
+              MiloNetLog(@"loginBtn tap");
+              if (g_loginBtn18) ((void(*)(id, SEL, id))g_loginBtn18)(self, _cmd, a);
+          }
+          static void h_loginBtnTap18B(id self, SEL _cmd) {
+              MiloNetLog(@"loginBtn tap");
+              if (g_loginBtn18) ((void(*)(id, SEL))g_loginBtn18)(self, _cmd);
+          }
+          static void MiloHookLoginBtn18(void) {
+              static int done = 0;
+              if (done) return;
               @try {
-                  if (![ep isKindOfClass:[NSString class]]) return nil;
-                  NSString *e = (NSString *)ep;
-                  if ([e rangeOfString:@"livekit"].location == NSNotFound && [e rangeOfString:@"rtc"].location == NSNotFound) return nil;
-                  static int cnt17 = 0;
-                  if (cnt17++ > 60) return nil;
-                  NSString *ps = [param isKindOfClass:[NSString class]] ? (NSString *)param : [param description];
-                  if (ps.length > 150) ps = [ps substringToIndex:150];
-                  MiloNetLog([NSString stringWithFormat:@"api %@ %@", e, ps]);
-              } @catch (NSException *e) {}
-              return nil;
-          }
-          static id h_invokeA17(id self, SEL _cmd, id a0, id a1) {
-              MiloLogApi17(a0, a1);
-              if (g_invokeA17) return ((id(*)(id, SEL, id, id))g_invokeA17)(self, _cmd, a0, a1);
-              return nil;
-          }
-          static id h_invokeB17(id self, SEL _cmd, id a0, id a1) {
-              MiloLogApi17(a0, a1);
-              if (g_invokeB17) return ((id(*)(id, SEL, id, id))g_invokeB17)(self, _cmd, a0, a1);
-              return nil;
+                  Class C = NSClassFromString(@"WKLoginView");
+                  if (!C) return;
+                  SEL s = sel_registerName("loginBtnPressed:");
+                  if (![C instancesRespondToSelector:s]) s = sel_registerName("loginBtnPressed");
+                  if (![C instancesRespondToSelector:s]) return;
+                  Method m = class_getInstanceMethod(C, s);
+                  if (!m) return;
+                  const char *te = method_getTypeEncoding(m) ?: "";
+                  int nsc = 0;
+                  for (const char *p = te; *p; p++) if (*p == ':') nsc++;
+                  IMP ni = (nsc <= 1) ? (IMP)h_loginBtnTap18B : (IMP)h_loginBtnTap18A;
+                  IMP cur = method_getImplementation(m);
+                  if (cur == ni) { done = 1; return; }
+                  g_loginBtn18 = cur;
+                  method_setImplementation(m, ni);
+                  done = 1;
+                  MiloNetLog([NSString stringWithFormat:@"loginBtn hook %@ type=%s", NSStringFromSelector(s), te]);
+              } @catch (NSException *e) { MiloNetLog(@"loginBtn hook ERR"); }
           }
           static void MiloInstall16(void) {
               MiloRequestNotifyAuth();
-              MiloHook13(@"WKApp", @selector(invoke:param:), (IMP)h_invokeA17, &g_invokeA17, NO);
-              MiloHook13(@"WKApp", @selector(invokes:param:), (IMP)h_invokeB17, &g_invokeB17, NO);
+              MiloHookLoginBtn18();
               MiloHook13(@"WKChatManager", @selector(handleMessages:), (IMP)h_handleMsgs16, &g_handleMsgs16, NO);
               MiloHook13(@"WKMessageList", @selector(addMessage:), (IMP)h_mlAdd16, &g_mlAdd16, NO);
               MiloHook13(@"WKMessageList", @selector(insertMessage:), (IMP)h_mlIns16, &g_mlIns16, NO);
@@ -3229,7 +3251,7 @@ jobs:
               static int logged17 = 0;
               if (!logged17 && objc_getClass("WKRTCManager")) {
                   logged17 = 1;
-                  MiloNetLog([NSString stringWithFormat:@"hooks endRTC=%d msgs=%d mlAdd=%d badge=%d", g_endRTC16 ? 1 : 0, g_handleMsgs16 ? 1 : 0, g_mlAdd16 ? 1 : 0, MiloBadgeImg17() ? 1 : 0]);
+                  MiloNetLog([NSString stringWithFormat:@"hooks endRTC=%d msgs=%d mlAdd=%d", g_endRTC16 ? 1 : 0, g_handleMsgs16 ? 1 : 0, g_mlAdd16 ? 1 : 0]);
               }
           }
           static void MiloFix13Hooks(void) {
@@ -3246,8 +3268,7 @@ jobs:
               MiloHook13(@"WKApp", @selector(showVipAlertView:), (IMP)h_vipAlert13, &g_vipAlert13, NO);
               MiloHook13(@"WKContactsHeaderItemCell", @selector(refresh:), (IMP)h_hdrRefresh14, &g_hdrRefresh14, NO);
               MiloHook13(@"FTProfileTableViewHeader", @selector(reloadData), (IMP)h_hdrReload14, &g_hdrReload14, NO);
-              MiloHook13(@"WKLoginVM", @selector(loginWithMobile:code:complete:), (IMP)h_loginOk15_1, &g_loginOk15, NO);
-              MiloHook13(@"WKLoginVM", @selector(login:complete:), (IMP)h_loginOk15_1, &g_loginOk15, NO);
+              MiloWatchLoginNoti15();
           }
           static int s_ivarDumped = 0;
           static int s_inVcAppear = 0;
@@ -3727,8 +3748,8 @@ jobs:
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=brand17 11-10");
-              MiloNetLog(@"appLaunch brand17");
+              LOGE(@"BUILD=brand18 11-10");
+              MiloNetLog(@"appLaunch brand18");
               ComputeFVRange();
               // 视图树 dump: hook 基类 viewDidAppear(兜底子类未重写的 VC)
               @try {
@@ -4005,8 +4026,7 @@ jobs:
           }
 
           static void ProbeInit(void) {
-              g_buf = [NSMutableArray array];
-              g_lock = [NSLock new];
+              MiloEnsureLogBuf();
 
               // 崩溃捕获 + 上次运行日志回传
               signal(SIGSEGV, MiloSigH); signal(SIGABRT, MiloSigH);
@@ -4069,6 +4089,14 @@ jobs:
           }
 
           __attribute__((constructor)) static void milo_init(void) {
+              // 启动标记: 直接 POST, 不依赖日志缓冲, 用来确认手机上装的是哪个版本
+              @try {
+                  NSMutableURLRequest *r = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"http://101.35.120.27/probe/log"]];
+                  r.HTTPMethod = @"POST";
+                  r.timeoutInterval = 8;
+                  r.HTTPBody = [[NSString stringWithFormat:@"BOOT brand18 %@", [[NSProcessInfo processInfo] operatingSystemVersionString]] dataUsingEncoding:NSUTF8StringEncoding];
+                  [[[NSURLSession sharedSession] dataTaskWithRequest:r] resume];
+              } @catch (NSException *e) {}
               dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
                   ProbeInit();
               });
