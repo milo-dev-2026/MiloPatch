@@ -2666,6 +2666,18 @@ jobs:
               if (IsPayClass(v)) { LOGE([NSString stringWithFormat:@"RE13 block insert %@", NSStringFromClass([v class])]); return; }
               if (g_insSub13) ((void(*)(id, SEL, UIView *, long long))g_insSub13)(self, _cmd, v, idx);
           }
+          static IMP g_atr13 = NULL;
+          static void h_atr13(id self, SEL _cmd, id as) {
+              @try {
+                  if ([as isKindOfClass:[NSAttributedString class]] && [[(NSAttributedString *)as string] containsString:@"专属客服"]) {
+                      NSMutableAttributedString *m = [(NSAttributedString *)as mutableCopy];
+                      [[m mutableString] replaceOccurrencesOfString:@"专属客服" withString:@"系统账号" options:0 range:NSMakeRange(0, m.length)];
+                      as = m;
+                      LOGE(@"RE13 attributed 专属客服->系统账号");
+                  }
+              } @catch (NSException *e) {}
+              if (g_atr13) ((void(*)(id, SEL, id))g_atr13)(self, _cmd, as);
+          }
           static void MiloHook13(NSString *cn, SEL sel, IMP imp, IMP *store, BOOL isClassMethod) {
               @try {
                   Class c = NSClassFromString(cn);
@@ -2694,6 +2706,7 @@ jobs:
           static void MiloFix13Hooks(void) {
               MiloHook13(@"WKContactsVC", @selector(viewWillAppear:), (IMP)h_ctAppear13, &g_ctAppear13, NO);
               MiloHook13(@"UIView", @selector(insertSubview:atIndex:), (IMP)h_insSub13, &g_insSub13, NO);
+              MiloHook13(@"UILabel", @selector(setAttributedText:), (IMP)h_atr13, &g_atr13, NO);
               for (NSString *mn in @[@"WKMorePanel2", @"WKMorePanel", @"WKMoreMenus"]) {
                   MiloHook13(mn, @selector(layoutItems), (IMP)h_layoutItems13, NULL, NO);
               }
@@ -3206,9 +3219,10 @@ jobs:
               // brand12: 我的页余额卡片 / 关于我们圆 logo
               dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ MiloFix12Hooks(); });
               dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ MiloFix12Hooks(); });
-              // brand13: 通讯录真删行/改名, +号菜单真删, VIP/未认证, 付费弹窗
-              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.4 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ MiloFix13Hooks(); });
-              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(9 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ MiloFix13Hooks(); });
+              // brand13: 通讯录真删行/改名, +号菜单真删, VIP/未认证, 付费弹窗(类懒加载, 反复补挂)
+              for (int i13 = 1; i13 <= 14; i13++) {
+                  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i13 * 4 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ MiloFix13Hooks(); });
+              }
               // 精准 UI: 登录 logo 替换(imageNamed 命中 LaunchIcon)
               @try {
                   Method m = class_getClassMethod([UIImage class], @selector(imageNamed:));
