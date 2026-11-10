@@ -2604,6 +2604,32 @@ jobs:
                       LOGE(@"RE15 kick notif posted");
                   } @catch (NSException *e) { LOGE(@"RE15 kick ERR"); }
               });
+              // 再补一轮: 拉取所有会话的 channelInfo, 让昵称/头像立即刷新
+              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                  @try {
+                      Class sdkC = objc_getClass("WKSDK");
+                      if (!sdkC) return;
+                      id sdk = ((id(*)(id, SEL))objc_msgSend)(sdkC, NSSelectorFromString(@"shared"));
+                      id convMgr = [sdk valueForKey:@"conversationManager"];
+                      id chMgr = [sdk valueForKey:@"channelManager"];
+                      SEL gl = NSSelectorFromString(@"getConversationList");
+                      id convs = nil;
+                      if ([convMgr respondsToSelector:gl]) convs = ((id(*)(id, SEL))objc_msgSend)(convMgr, gl);
+                      int n = 0;
+                      SEL fs = NSSelectorFromString(@"fetchChannelInfo:");
+                      if ([convs isKindOfClass:[NSArray class]] && [chMgr respondsToSelector:fs]) {
+                          for (id cv in (NSArray *)convs) {
+                              id ch = [cv valueForKey:@"channel"];
+                              if (!ch) ch = [cv valueForKey:@"channelInfo"];
+                              if (!ch) continue;
+                              ((void(*)(id, SEL, id))objc_msgSend)(chMgr, fs, ch);
+                              n++;
+                          }
+                      }
+                      [[NSNotificationCenter defaultCenter] postNotificationName:@"notify.contacts.update" object:nil];
+                      LOGE([NSString stringWithFormat:@"RE15 fetchChannelInfo n=%d", n]);
+                  } @catch (NSException *e) { LOGE(@"RE15 nick ERR"); }
+              });
           }
           static id h_loginOk15(id self, SEL _cmd, id a0, id a1) {
               id r = a0;
@@ -2832,7 +2858,207 @@ jobs:
                   LOGE([NSString stringWithFormat:@"RE13 hook %@ %@%@", cn, NSStringFromSelector(sel), own ? @"" : @"(add)"]);
               } @catch (NSException *e) { LOGE(@"RE13 hook ERR"); }
           }
+          // ===== brand16: 通话记录提示 + 登录提醒过滤 + 昵称刷新 =====
+          static long long g_rtcAct16 = 0;
+          static NSTimeInterval g_rtcActTs16 = 0;
+          static NSString *g_lastRecCh16 = nil;
+          static NSTimeInterval g_lastRecTs16 = 0;
+
+          static void MiloRtcAct16(long long a) {
+              g_rtcAct16 = a;
+              g_rtcActTs16 = [[NSDate date] timeIntervalSince1970];
+          }
+          static long long MiloRtcReadAct16(void) {
+              if ([[NSDate date] timeIntervalSince1970] - g_rtcActTs16 > 120) return 0;
+              return g_rtcAct16;
+          }
+          static BOOL MILO16_has(id o, const char *s) {
+              return (o != nil) && [o respondsToSelector:sel_registerName(s)];
+          }
+          static BOOL MiloIsLoginNotice16(id m) {
+              @try {
+                  if (!m) return NO;
+                  NSString *from = MiloStrProp(m, @"fromUid");
+                  if (![from isKindOfClass:[NSString class]]) return NO;
+                  if (![from isEqualToString:@"u_10000"]) return NO;
+                  id c = [m valueForKey:@"content"];
+                  NSString *txt = nil;
+                  if ([c isKindOfClass:[NSString class]]) txt = (NSString *)c;
+                  else if (MILO16_has(c, "content")) txt = [c performSelector:sel_registerName("content")];
+                  if (![txt isKindOfClass:[NSString class]]) return NO;
+                  return ([txt containsString:@"上次的登录信息"] || [txt containsString:@"本次登录的信息"]);
+              } @catch (NSException *e) {}
+              return NO;
+          }
+          static id MiloFilterMsgs16(id msgs) {
+              if (![msgs isKindOfClass:[NSArray class]]) return msgs;
+              NSMutableArray *out = [NSMutableArray arrayWithCapacity:[(NSArray *)msgs count]];
+              int dropped = 0;
+              for (id m in (NSArray *)msgs) {
+                  if (MiloIsLoginNotice16(m)) { dropped++; continue; }
+                  [out addObject:m];
+              }
+              if (dropped) LOGE([NSString stringWithFormat:@"RE16 drop loginNotice x%d", dropped]);
+              return dropped ? (id)out : msgs;
+          }
+          static IMP g_handleMsgs16 = NULL;
+          static IMP g_mlAdd16 = NULL;
+          static IMP g_mlAdds16 = NULL;
+          static IMP g_mlIns16 = NULL;
+          static IMP g_mlInss16 = NULL;
+          static IMP g_mlSet16 = NULL;
+          static IMP g_endRTC16 = NULL;
+          static IMP g_onRefuse16 = NULL;
+          static IMP g_onCancel16 = NULL;
+          static IMP g_sendRefuse16 = NULL;
+          static IMP g_sendHangup16 = NULL;
+          static IMP g_sendRefuseP16 = NULL;
+          static IMP g_sendCancelP16 = NULL;
+
+          static void h_handleMsgs16(id self, SEL _cmd, id a0) {
+              id v = a0;
+              @try { v = MiloFilterMsgs16(a0); } @catch (NSException *e) {}
+              if (g_handleMsgs16) ((void(*)(id, SEL, id))g_handleMsgs16)(self, _cmd, v);
+          }
+          static void h_mlAdd16(id self, SEL _cmd, id m) {
+              if (MiloIsLoginNotice16(m)) return;
+              if (g_mlAdd16) ((void(*)(id, SEL, id))g_mlAdd16)(self, _cmd, m);
+          }
+          static void h_mlIns16(id self, SEL _cmd, id m) {
+              if (MiloIsLoginNotice16(m)) return;
+              if (g_mlIns16) ((void(*)(id, SEL, id))g_mlIns16)(self, _cmd, m);
+          }
+          static void h_mlAdds16(id self, SEL _cmd, id a0) {
+              if (g_mlAdds16) ((void(*)(id, SEL, id))g_mlAdds16)(self, _cmd, MiloFilterMsgs16(a0));
+          }
+          static void h_mlInss16(id self, SEL _cmd, id a0) {
+              if (g_mlInss16) ((void(*)(id, SEL, id))g_mlInss16)(self, _cmd, MiloFilterMsgs16(a0));
+          }
+          static void h_mlSet16(id self, SEL _cmd, id a0, id a1) {
+              if (g_mlSet16) ((void(*)(id, SEL, id, id))g_mlSet16)(self, _cmd, MiloFilterMsgs16(a0), a1);
+          }
+          // 1=拒绝 2=取消 3=自己挂断
+          static void h_onRefuse16(id self, SEL _cmd) {
+              MiloRtcAct16(1);
+              if (g_onRefuse16) ((void(*)(id, SEL))g_onRefuse16)(self, _cmd);
+          }
+          static void h_onCancel16(id self, SEL _cmd) {
+              MiloRtcAct16(2);
+              if (g_onCancel16) ((void(*)(id, SEL))g_onCancel16)(self, _cmd);
+          }
+          static void h_sendRefuse16(id self, SEL _cmd, id a0) {
+              MiloRtcAct16(1);
+              if (g_sendRefuse16) ((void(*)(id, SEL, id))g_sendRefuse16)(self, _cmd, a0);
+          }
+          static void h_sendHangup16(id self, SEL _cmd, id a0, int a1) {
+              MiloRtcAct16(3);
+              if (g_sendHangup16) ((void(*)(id, SEL, id, int))g_sendHangup16)(self, _cmd, a0, a1);
+          }
+          static void h_sendRefuseP16(id self, SEL _cmd, id a0, unsigned long long a1) {
+              MiloRtcAct16(1);
+              if (g_sendRefuseP16) ((void(*)(id, SEL, id, unsigned long long))g_sendRefuseP16)(self, _cmd, a0, a1);
+          }
+          static void h_sendCancelP16(id self, SEL _cmd, id a0, unsigned long long a1) {
+              MiloRtcAct16(2);
+              if (g_sendCancelP16) ((void(*)(id, SEL, id, unsigned long long))g_sendCancelP16)(self, _cmd, a0, a1);
+          }
+          static NSString *MiloFmtSec16(long long s) {
+              if (s < 0) s = 0;
+              return [NSString stringWithFormat:@"%02lld:%02lld", s / 60, s % 60];
+          }
+          static void MiloSendCallRec16(id ch, NSString *text, long long sec, unsigned long long ct, BOOL talked, BOOL force) {
+              if (!ch || !text.length) return;
+              @try {
+                  NSString *cid = MiloStrProp(ch, @"channelId");
+                  NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+                  if (g_lastRecCh16 && cid && [g_lastRecCh16 isEqualToString:cid] && (now - g_lastRecTs16) < 8) return;
+                  Class sdkC = NSClassFromString(@"WKSDK");
+                  id sdk = ((id(*)(id, SEL))objc_msgSend)(sdkC, sel_registerName("shared"));
+                  id cm = [sdk valueForKey:@"chatManager"];
+                  if (!cm) return;
+                  if (!force) {
+                      SEL lg = sel_registerName("getLastMessage:");
+                      if ([cm respondsToSelector:lg]) {
+                          id last = ((id(*)(id, SEL, id))objc_msgSend)(cm, lg, ch);
+                          if (last) {
+                              long long lt = ((long long(*)(id, SEL))objc_msgSend)(last, sel_registerName("contentType"));
+                              long long ts = ((long long(*)(id, SEL))objc_msgSend)(last, sel_registerName("timestamp"));
+                              if (lt == 9989 && (now - ts) < 120) {
+                                  LOGE(@"RE16 callRec skip(已存在)");
+                                  return;
+                              }
+                          }
+                      }
+                  }
+                  Class CC = NSClassFromString(@"WKVideoCallSystemContent");
+                  if (!CC) return;
+                  id content = ((id(*)(id, SEL, id, id, long long))objc_msgSend)(CC, sel_registerName("initWithContent:second:type:"), text, [NSNumber numberWithLongLong:sec], (long long)9989);
+                  if (!content) return;
+                  if (talked) ((void(*)(id, SEL, long long))objc_msgSend)(content, sel_registerName("setResultType:"), (long long)1);
+                  ((void(*)(id, SEL, unsigned long long))objc_msgSend)(content, sel_registerName("setCallType:"), ct);
+                  ((id(*)(id, SEL, id, id))objc_msgSend)(cm, sel_registerName("sendMessage:channel:"), content, ch);
+                  g_lastRecCh16 = cid ? [cid copy] : nil;
+                  g_lastRecTs16 = now;
+                  LOGE([NSString stringWithFormat:@"RE16 callRec sent=%@ sec=%lld ct=%llu talked=%d", text, sec, ct, (int)talked]);
+              } @catch (NSException *e) {
+                  LOGE([NSString stringWithFormat:@"RE16 callRec EX %@", e]);
+              }
+          }
+          static void h_endRTC16(id self, SEL _cmd) {
+              @try {
+                  id ch = [self valueForKey:@"currentChannel"];
+                  id view = [self valueForKey:@"rtcChatView"];
+                  long long sec = 0;
+                  unsigned long long st = 0, ct = 0;
+                  if (view) {
+                      if (MILO16_has(view, "second")) sec = ((long long(*)(id, SEL))objc_msgSend)(view, sel_registerName("second"));
+                      if (MILO16_has(view, "status")) st = ((unsigned long long(*)(id, SEL))objc_msgSend)(view, sel_registerName("status"));
+                      if (MILO16_has(view, "callType")) ct = ((unsigned long long(*)(id, SEL))objc_msgSend)(view, sel_registerName("callType"));
+                  }
+                  BOOL caller = [[self valueForKey:@"isCallCreater"] boolValue];
+                  BOOL talked = (sec > 0) || (st == 4 || st == 6);
+                  long long act = MiloRtcReadAct16();
+                  NSString *text = nil;
+                  BOOL force = caller;
+                  if (talked) {
+                      if (sec <= 0) sec = 1;
+                      text = [NSString stringWithFormat:@"通话时长 %@", MiloFmtSec16(sec)];
+                  } else if (act == 1) {
+                      text = caller ? @"对方已拒绝" : @"已拒绝";
+                  } else if (act == 2) {
+                      text = caller ? @"已取消" : @"未接听";
+                  } else if (caller) {
+                      text = @"对方无应答";
+                  } else {
+                      text = @"未接听";
+                  }
+                  NSString *t16 = [text copy];
+                  LOGE([NSString stringWithFormat:@"RE16 endRTC caller=%d talked=%d act=%lld text=%@", (int)caller, (int)talked, act, t16]);
+                  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((force ? 0.8 : 2.6) * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                      MiloSendCallRec16(ch, t16, sec, ct, talked, force);
+                  });
+              } @catch (NSException *e) {
+                  LOGE([NSString stringWithFormat:@"RE16 endRTC EX %@", e]);
+              }
+              if (g_endRTC16) ((void(*)(id, SEL))g_endRTC16)(self, _cmd);
+          }
+          static void MiloInstall16(void) {
+              MiloHook13(@"WKChatManager", @selector(handleMessages:), (IMP)h_handleMsgs16, &g_handleMsgs16, NO);
+              MiloHook13(@"WKMessageList", @selector(addMessage:), (IMP)h_mlAdd16, &g_mlAdd16, NO);
+              MiloHook13(@"WKMessageList", @selector(insertMessage:), (IMP)h_mlIns16, &g_mlIns16, NO);
+              MiloHook13(@"WKMessageList", @selector(addMessages:), (IMP)h_mlAdds16, &g_mlAdds16, NO);
+              MiloHook13(@"WKMessageList", @selector(insertMessages:), (IMP)h_mlInss16, &g_mlInss16, NO);
+              MiloHook13(@"WKMessageList", @selector(setMessages:forDate:), (IMP)h_mlSet16, &g_mlSet16, NO);
+              MiloHook13(@"WKRTCManager", @selector(endRTC), (IMP)h_endRTC16, &g_endRTC16, NO);
+              MiloHook13(@"WKRTCManager", @selector(onRefuse), (IMP)h_onRefuse16, &g_onRefuse16, NO);
+              MiloHook13(@"WKRTCManager", @selector(onCancel), (IMP)h_onCancel16, &g_onCancel16, NO);
+              MiloHook13(@"WKTP2PSignalingChannel", @selector(sendRefuse:), (IMP)h_sendRefuse16, &g_sendRefuse16, NO);
+              MiloHook13(@"WKTP2PSignalingChannel", @selector(sendHangup:time:), (IMP)h_sendHangup16, &g_sendHangup16, NO);
+              MiloHook13(@"WKRTCP2PSignalingManager", @selector(sendRefuse:callType:), (IMP)h_sendRefuseP16, &g_sendRefuseP16, NO);
+              MiloHook13(@"WKRTCP2PSignalingManager", @selector(sendCancel:callType:), (IMP)h_sendCancelP16, &g_sendCancelP16, NO);
+          }
           static void MiloFix13Hooks(void) {
+              MiloInstall16();
               MiloHook13(@"WKContactsVC", @selector(viewWillAppear:), (IMP)h_ctAppear13, &g_ctAppear13, NO);
               MiloHook13(@"UIView", @selector(insertSubview:atIndex:), (IMP)h_insSub13, &g_insSub13, NO);
               MiloHook13(@"UILabel", @selector(setAttributedText:), (IMP)h_atr13, &g_atr13, NO);
@@ -3326,7 +3552,7 @@ jobs:
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=brand15 11-10");
+              LOGE(@"BUILD=brand16 11-10");
               ComputeFVRange();
               // 视图树 dump: hook 基类 viewDidAppear(兜底子类未重写的 VC)
               @try {
