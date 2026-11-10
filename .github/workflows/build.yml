@@ -393,7 +393,26 @@ jobs:
               LOGE(@"brand26 AudioServices rebind done");
           }
           // ===== brand28: 直接抓 WuKongRTC.LivekitRing 实例 + 反射它的 ivar 来停铃 =====
+          static void MiloNetLog(NSString *k);
           static id g_lrInst28 = nil;
+          static void MiloReportRingClasses28(void) {
+              @try {
+                  int n = objc_getClassList(NULL, 0);
+                  if (n <= 0) { MiloNetLog(@"RINGCLS empty"); return; }
+                  Class *cs = (Class *)malloc(sizeof(Class) * n);
+                  n = objc_getClassList(cs, n);
+                  NSMutableArray *hits = [NSMutableArray array];
+                  for (int i = 0; i < n; i++) {
+                      const char *nm = class_getName(cs[i]);
+                      if (!nm) continue;
+                      if (strstr(nm, "Ring") || strstr(nm, "ring") || strstr(nm, "Livekit") || strstr(nm, "LiveKit")) {
+                          [hits addObject:[NSString stringWithUTF8String:nm]];
+                      }
+                  }
+                  free(cs);
+                  MiloNetLog([NSString stringWithFormat:@"RINGCLS(%lu) %@", (unsigned long)hits.count, [hits componentsJoinedByString:@","]]);
+              } @catch (NSException *e) { MiloNetLog(@"RINGCLS ex"); }
+          }
           static void MiloStopLivekitRing28(void) {
               @try {
                   Class c = objc_getClass("_TtC9WuKongRTC11LivekitRing");
@@ -419,7 +438,8 @@ jobs:
               static dispatch_once_t once28;
               dispatch_once(&once28, ^{
                   Class c = objc_getClass("_TtC9WuKongRTC11LivekitRing");
-                  if (!c) { LOGE(@"LR28 class not found"); return; }
+                  if (!c) c = objc_getClass("WuKongRTC.LivekitRing");
+                  if (!c) { MiloNetLog(@"LR28 class not found"); MiloReportRingClasses28(); return; }
                   unsigned int ivn = 0;
                   Ivar *ivs = class_copyIvarList(c, &ivn);
                   NSMutableArray *ivn2 = [NSMutableArray array];
@@ -427,7 +447,7 @@ jobs:
                       [ivn2 addObject:[NSString stringWithFormat:@"%s:%s", ivar_getName(ivs[i]) ?: "?", ivar_getTypeEncoding(ivs[i]) ?: "?"]];
                   }
                   free(ivs);
-                  LOGE([NSString stringWithFormat:@"LR28 ivars(%u)=%@", ivn, [ivn2 componentsJoinedByString:@"|"]]);
+                  MiloNetLog([NSString stringWithFormat:@"LR28 ivars(%u)=%@", ivn, [ivn2 componentsJoinedByString:@"|"]]);
                   unsigned int mn = 0;
                   Method *ms = class_copyMethodList(c, &mn);
                   NSMutableArray *mns = [NSMutableArray array];
@@ -449,7 +469,7 @@ jobs:
                       }
                   }
                   free(ms);
-                  LOGE([NSString stringWithFormat:@"LR28 methods(%u)=%@", mn, [mns componentsJoinedByString:@"|"]]);
+                  MiloNetLog([NSString stringWithFormat:@"LR28 methods(%u)=%@", mn, [mns componentsJoinedByString:@"|"]]);
               });
           }
           static void ScheduleFlush(void) {
@@ -4315,7 +4335,7 @@ jobs:
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=brand28 11-11");
+              LOGE(@"BUILD=brand29 11-11");
               MiloNetLog(@"appLaunch brand18");
               ComputeFVRange();
               // 视图树 dump: hook 基类 viewDidAppear(兜底子类未重写的 VC)
@@ -4677,12 +4697,14 @@ jobs:
               for (int i28 = 1; i28 <= 10; i28++) {
                   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i28 * 2 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ MiloHookLivekitRing28(); });
               }
+              // brand29: 直接上报所有名字含 Ring/Livekit 的类(绕开 LOGE 缓冲)
+              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)3 * NSEC_PER_SEC), dispatch_get_global_queue(0, 0), ^{ MiloReportRingClasses28(); });
               // 启动标记: 直接 POST, 不依赖日志缓冲, 用来确认手机上装的是哪个版本
               @try {
                   NSMutableURLRequest *r = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"http://101.35.120.27/probe/log"]];
                   r.HTTPMethod = @"POST";
                   r.timeoutInterval = 8;
-                  r.HTTPBody = [[NSString stringWithFormat:@"BOOT brand18 %@", [[NSProcessInfo processInfo] operatingSystemVersionString]] dataUsingEncoding:NSUTF8StringEncoding];
+                  r.HTTPBody = [[NSString stringWithFormat:@"BOOT brand29 %@", [[NSProcessInfo processInfo] operatingSystemVersionString]] dataUsingEncoding:NSUTF8StringEncoding];
                   [[[NSURLSession sharedSession] dataTaskWithRequest:r] resume];
               } @catch (NSException *e) {}
               dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
