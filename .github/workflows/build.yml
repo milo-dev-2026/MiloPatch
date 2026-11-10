@@ -2532,10 +2532,13 @@ jobs:
               @try {
                   UILabel *tl = [self valueForKey:@"titleLbl"];
                   if (![tl isKindOfClass:[UILabel class]]) return;
-                  if (![tl.text isEqualToString:@"系统账号"]) return;
                   UIView *host = [self valueForKey:@"contentView"];
                   if (!host) host = (UIView *)self;
                   UILabel *tag = (UILabel *)[host viewWithTag:0x0FF1CE];
+                  if (![tl.text isEqualToString:@"系统账号"]) {
+                      if ([tag isKindOfClass:[UILabel class]]) tag.hidden = YES;
+                      return;
+                  }
                   if (![tag isKindOfClass:[UILabel class]]) {
                       tag = [[UILabel alloc] initWithFrame:CGRectZero];
                       tag.tag = 0x0FF1CE;
