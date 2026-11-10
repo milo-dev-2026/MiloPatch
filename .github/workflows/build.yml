@@ -2462,10 +2462,15 @@ jobs:
           }
           static IMP g_meAppearOrig = NULL;
           static IMP g_aboutAppearOrig = NULL;
+          static void MiloFixMeHeader(id vc);
           static void h_meAppear(id self, SEL _cmd, BOOL a) {
               if (g_meAppearOrig) ((void(*)(id, SEL, BOOL))g_meAppearOrig)(self, _cmd, a);
               MiloFixMeVC(self);
-              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ MiloFixMeVC(self); });
+              MiloFixMeHeader(self);
+              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                  MiloFixMeVC(self);
+                  MiloFixMeHeader(self);
+              });
           }
           static void h_aboutAppear(id self, SEL _cmd, BOOL a) {
               if (g_aboutAppearOrig) ((void(*)(id, SEL, BOOL))g_aboutAppearOrig)(self, _cmd, a);
@@ -2490,6 +2495,212 @@ jobs:
           static void MiloFix12Hooks(void) {
               MiloHookAppear(NSClassFromString(@"WKMeVC"), (IMP)h_meAppear, &g_meAppearOrig);
               MiloHookAppear(NSClassFromString(@"FAAboutAppVC"), (IMP)h_aboutAppear, &g_aboutAppearOrig);
+          }
+          // ===== brand13: 通讯录真删行/改名, +号菜单真删, VIP/未认证, 我的页头图收高, 付费弹窗 =====
+          static NSMutableSet *g_ct13Seen = nil;
+          static NSMutableSet *g_more13Seen = nil;
+          static BOOL Milo13DropTitle(NSString *t) {
+              if (!t.length) return NO;
+              if ([t containsString:@"文件传输助手"] || [t containsString:@"文件助手"]) return YES;
+              if ([t containsString:@"标签"]) return YES;
+              if ([t containsString:@"座席"] || [t containsString:@"坐席"]) return YES;
+              return NO;
+          }
+          static void Milo13FilterContacts(id vc) {
+              @try {
+                  id itemsObj = [vc valueForKey:@"items"];
+                  if (![itemsObj isKindOfClass:[NSArray class]]) return;
+                  NSArray *secs = (NSArray *)itemsObj;
+                  NSMutableArray *out = [NSMutableArray arrayWithCapacity:secs.count];
+                  int dropped = 0, renamed = 0;
+                  for (id sec in secs) {
+                      if (![sec isKindOfClass:[NSArray class]]) { [out addObject:sec]; continue; }
+                      NSMutableArray *rows = [NSMutableArray arrayWithCapacity:[(NSArray *)sec count]];
+                      for (id it in (NSArray *)sec) {
+                          NSString *cn = NSStringFromClass([it class]);
+                          if (![cn containsString:@"HeaderItem"]) { [rows addObject:it]; continue; }
+                          NSString *t = MiloStrProp(it, @"title");
+                          if (!g_ct13Seen) g_ct13Seen = [NSMutableSet set];
+                          if (t.length && ![g_ct13Seen containsObject:t]) {
+                              [g_ct13Seen addObject:t];
+                              LOGE([NSString stringWithFormat:@"RE13 contactItem \"%@\" sid=%@ icon=%@ badge=%@",
+                                    t, MiloStrProp(it, @"sid") ?: @"", MiloStrProp(it, @"icon") ?: @"", MiloStrProp(it, @"badgeValue") ?: @""]);
+                          }
+                          if (Milo13DropTitle(t)) {
+                              dropped++;
+                              LOGE([NSString stringWithFormat:@"RE13 contactItem dropped \"%@\"", t]);
+                              continue;
+                          }
+                          if (t && [t containsString:@"专属客服"]) {
+                              @try { [it setValue:@"系统账号" forKey:@"title"]; renamed++; } @catch (NSException *e) {}
+                          }
+                          [rows addObject:it];
+                      }
+                      [out addObject:rows];
+                  }
+                  if (dropped || renamed) {
+                      [vc setValue:out forKey:@"items"];
+                      id tv = [vc valueForKey:@"tableView"];
+                      if ([tv respondsToSelector:@selector(reloadData)]) [tv performSelector:@selector(reloadData)];
+                      LOGE([NSString stringWithFormat:@"RE13 contacts dropped=%d renamed=%d", dropped, renamed]);
+                  }
+              } @catch (NSException *e) { LOGE(@"RE13 contacts filter ERR"); }
+          }
+          static IMP g_ctAppear13 = NULL;
+          static void h_ctAppear13(id self, SEL _cmd, BOOL a) {
+              if (g_ctAppear13) ((void(*)(id, SEL, BOOL))g_ctAppear13)(self, _cmd, a);
+              Milo13FilterContacts(self);
+              __weak id wvc = self;
+              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                  id v = wvc; if (!v) return;
+                  Milo13FilterContacts(v);
+                  id tv = [v valueForKey:@"tableView"];
+                  if ([tv respondsToSelector:@selector(reloadData)]) [tv performSelector:@selector(reloadData)];
+              });
+              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                  id v = wvc; if (!v) return;
+                  Milo13FilterContacts(v);
+                  id tv = [v valueForKey:@"tableView"];
+                  if ([tv respondsToSelector:@selector(reloadData)]) [tv performSelector:@selector(reloadData)];
+              });
+          }
+          // + 号菜单: 渲染前把座席管理从 moreItems 里删掉(不是隐藏)
+          static void h_layoutItems13(id self, SEL _cmd) {
+              @try {
+                  id arr = [self valueForKey:@"moreItems"];
+                  if ([arr isKindOfClass:[NSArray class]]) {
+                      NSMutableArray *keep = [NSMutableArray array];
+                      for (id it in (NSArray *)arr) {
+                          NSString *t = MiloItemTitle(it);
+                          if (!g_more13Seen) g_more13Seen = [NSMutableSet set];
+                          if (t.length && ![g_more13Seen containsObject:t]) {
+                              [g_more13Seen addObject:t];
+                              LOGE([NSString stringWithFormat:@"RE13 moreItem \"%@\" cls=%@", t, NSStringFromClass([it class])]);
+                          }
+                          if (Milo13DropTitle(t)) { LOGE([NSString stringWithFormat:@"RE13 moreItem dropped \"%@\"", t ?: @""]); continue; }
+                          [keep addObject:it];
+                      }
+                      if (keep.count != [(NSArray *)arr count]) [self setValue:keep forKey:@"moreItems"];
+                  }
+              } @catch (NSException *e) { LOGE(@"RE13 layoutItems ERR"); }
+              IMP o = FindOrig(self, _cmd);
+              if (o) ((void(*)(id, SEL))o)(self, _cmd);
+          }
+          // 头像/昵称: 强制 VIP=1, 已认证=YES; 隐藏"未认证"标签
+          static IMP g_avatarCfg13 = NULL;
+          static void h_avatarCfg13(id self, SEL _cmd, id uid, long long vip, BOOL verified) {
+              if (g_avatarCfg13) ((void(*)(id, SEL, id, long long, BOOL))g_avatarCfg13)(self, _cmd, uid, 1, YES);
+          }
+          static IMP g_nickColor13 = NULL;
+          static id h_nickColor13(id self, SEL _cmd, long long chType, long long vip, long long gType, long long fromType) {
+              if (g_nickColor13) return ((id(*)(id, SEL, long long, long long, long long, long long))g_nickColor13)(self, _cmd, chType, 1, gType, fromType);
+              return nil;
+          }
+          static IMP g_setTags13 = NULL;
+          static void h_setTags13(id self, SEL _cmd, id tags) {
+              @try {
+                  if ([tags isKindOfClass:[NSArray class]]) {
+                      NSMutableArray *keep = [NSMutableArray array];
+                      for (id tg in (NSArray *)tags) {
+                          NSString *txt = nil;
+                          for (NSString *k in @[@"title", @"name", @"text", @"content", @"label"]) {
+                              NSString *s = MiloStrProp(tg, k);
+                              if (s.length) { txt = s; break; }
+                          }
+                          if (txt.length && ([txt containsString:@"未认证"] || [txt containsString:@"未实名"])) {
+                              LOGE([NSString stringWithFormat:@"RE13 tag dropped \"%@\"", txt]);
+                              continue;
+                          }
+                          [keep addObject:tg];
+                      }
+                      tags = keep;
+                  }
+              } @catch (NSException *e) {}
+              if (g_setTags13) ((void(*)(id, SEL, id))g_setTags13)(self, _cmd, tags);
+          }
+          // 付费弹窗: WKApp showVipAlertView: 整个不弹
+          static IMP g_vipAlert13 = NULL;
+          static void h_vipAlert13(id self, SEL _cmd, unsigned long long from) {
+              LOGE([NSString stringWithFormat:@"RE13 block showVipAlertView from=%llu", from]);
+          }
+          // 我的页: 隐藏两张资产卡后把头图高度收回到头像/昵称/标签底部
+          static void MiloFixMeHeader(id vc) {
+              @try {
+                  UITableView *tv = [vc valueForKey:@"tableView"];
+                  UIView *hdr = tv.tableHeaderView;
+                  if (!hdr) return;
+                  int hid = 0;
+                  for (NSString *k in @[@"membershipCardView", @"ucoinCardView"]) {
+                      UIView *v = nil;
+                      @try { v = [hdr valueForKey:k]; } @catch (NSException *e) {}
+                      if ([v isKindOfClass:[UIView class]] && !v.hidden) { v.hidden = YES; hid++; }
+                  }
+                  CGFloat bottom = 0;
+                  for (NSString *k in @[@"avatarBox", @"nameLbl", @"profileIDView", @"profileTagsView", @"mineQRCodeBtn"]) {
+                      UIView *v = nil;
+                      @try { v = [hdr valueForKey:k]; } @catch (NSException *e) {}
+                      if ([v isKindOfClass:[UIView class]] && !v.hidden) bottom = MAX(bottom, CGRectGetMaxY(v.frame));
+                  }
+                  LOGE([NSString stringWithFormat:@"RE13 meHeader hid=%d h=%.0f bottom=%.0f", hid, hdr.frame.size.height, bottom]);
+                  CGFloat newH = bottom + 14.0;
+                  if (bottom > 40 && newH + 1.0 < hdr.frame.size.height) {
+                      CGRect f = hdr.frame;
+                      f.size.height = newH;
+                      hdr.frame = f;
+                  }
+                  UIView *bg = nil;
+                  @try { bg = [hdr valueForKey:@"profileBgView"]; } @catch (NSException *e) {}
+                  if ([bg isKindOfClass:[UIView class]]) bg.frame = hdr.bounds;
+                  UIView *bgi = nil;
+                  @try { bgi = [hdr valueForKey:@"bgImgView"]; } @catch (NSException *e) {}
+                  if ([bgi isKindOfClass:[UIView class]]) bgi.frame = bg ? bg.bounds : hdr.bounds;
+                  @try {
+                      CALayer *g = [hdr valueForKey:@"profileGradient"];
+                      if ([g isKindOfClass:[CALayer class]]) g.frame = bg ? bg.bounds : hdr.bounds;
+                  } @catch (NSException *e) {}
+                  tv.tableHeaderView = hdr;
+              } @catch (NSException *e) { LOGE(@"RE13 meHeader ERR"); }
+          }
+          static IMP g_insSub13 = NULL;
+          static void h_insSub13(id self, SEL _cmd, UIView *v, long long idx) {
+              if (IsPayClass(v)) { LOGE([NSString stringWithFormat:@"RE13 block insert %@", NSStringFromClass([v class])]); return; }
+              if (g_insSub13) ((void(*)(id, SEL, UIView *, long long))g_insSub13)(self, _cmd, v, idx);
+          }
+          static void MiloHook13(NSString *cn, SEL sel, IMP imp, IMP *store, BOOL isClassMethod) {
+              @try {
+                  Class c = NSClassFromString(cn);
+                  if (!c) { LOGE([NSString stringWithFormat:@"RE13 class nil %@", cn]); return; }
+                  Class target = isClassMethod ? object_getClass((id)c) : c;
+                  Method own = FindOwnMethod(target, sel);
+                  Method inh = class_getInstanceMethod(target, sel);
+                  if (!own && !inh) { LOGE([NSString stringWithFormat:@"RE13 method nil %@ %@", cn, NSStringFromSelector(sel)]); return; }
+                  if (own) {
+                      IMP cur = method_getImplementation(own);
+                      if (cur == imp) return;
+                      if (store) *store = cur;
+                      g_origMap[MapKey(target, sel)] = [NSValue valueWithPointer:cur];
+                      method_setImplementation(own, imp);
+                  } else {
+                      // 继承来的方法: 只在子类加覆盖, 避免改到父类(会影响所有 VC)
+                      IMP cur = method_getImplementation(inh);
+                      if (cur == imp) return;
+                      if (store) *store = cur;
+                      g_origMap[MapKey(target, sel)] = [NSValue valueWithPointer:cur];
+                      class_addMethod(target, sel, imp, method_getTypeEncoding(inh));
+                  }
+                  LOGE([NSString stringWithFormat:@"RE13 hook %@ %@%@", cn, NSStringFromSelector(sel), own ? @"" : @"(add)"]);
+              } @catch (NSException *e) { LOGE(@"RE13 hook ERR"); }
+          }
+          static void MiloFix13Hooks(void) {
+              MiloHook13(@"WKContactsVC", @selector(viewWillAppear:), (IMP)h_ctAppear13, &g_ctAppear13, NO);
+              MiloHook13(@"UIView", @selector(insertSubview:atIndex:), (IMP)h_insSub13, &g_insSub13, NO);
+              for (NSString *mn in @[@"WKMorePanel2", @"WKMorePanel", @"WKMoreMenus"]) {
+                  MiloHook13(mn, @selector(layoutItems), (IMP)h_layoutItems13, NULL, NO);
+              }
+              MiloHook13(@"WKUserAvatar", @selector(configureWithUID:vip:verified:), (IMP)h_avatarCfg13, &g_avatarCfg13, NO);
+              MiloHook13(@"WKUserColorUtil", @selector(nickNameColorWithchannelType:vip:groupType:fromType:), (IMP)h_nickColor13, &g_nickColor13, YES);
+              MiloHook13(@"FAUserTagsView", @selector(setTags:), (IMP)h_setTags13, &g_setTags13, NO);
+              MiloHook13(@"WKApp", @selector(showVipAlertView:), (IMP)h_vipAlert13, &g_vipAlert13, NO);
           }
           static int s_ivarDumped = 0;
           static int s_inVcAppear = 0;
@@ -2965,7 +3176,7 @@ jobs:
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=brand12 12-10");
+              LOGE(@"BUILD=brand13 11-10");
               ComputeFVRange();
               // 视图树 dump: hook 基类 viewDidAppear(兜底子类未重写的 VC)
               @try {
@@ -2995,6 +3206,9 @@ jobs:
               // brand12: 我的页余额卡片 / 关于我们圆 logo
               dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ MiloFix12Hooks(); });
               dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ MiloFix12Hooks(); });
+              // brand13: 通讯录真删行/改名, +号菜单真删, VIP/未认证, 付费弹窗
+              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.4 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ MiloFix13Hooks(); });
+              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(9 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{ MiloFix13Hooks(); });
               // 精准 UI: 登录 logo 替换(imageNamed 命中 LaunchIcon)
               @try {
                   Method m = class_getClassMethod([UIImage class], @selector(imageNamed:));
