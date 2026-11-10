@@ -296,6 +296,7 @@ jobs:
           // ===== brand26: 铃声真身 AudioServicesPlaySystemSound(C 层, ObjC hook 抓不到) =====
           // 用符号重绑定(fishhook 原理)改主程序 __la_symbol_ptr 里的函数指针
           static BOOL MiloRinging22(void);
+          static void MiloRingTbl22(void);
           static void (*g_realPlaySS26)(SystemSoundID) = NULL;
           static void (*g_realPlaySSc26)(SystemSoundID, void(^)(void)) = NULL;
           static void (*g_realPlayAlert26)(SystemSoundID) = NULL;
@@ -3924,6 +3925,27 @@ jobs:
               LOGE(@"AVPLAYER-PLAY");
               if (g_avpPlay22) ((void(*)(id, SEL))g_avpPlay22)(self, _cmd);
           }
+          // brand27: LivekitRing 真正调用的是 playAtTime:, 这才是能抓到铃声实例的钩子
+          static IMP g_apPlayAt27 = NULL;
+          static IMP g_apPrep27 = NULL;
+          static BOOL h_apPlayAt27(id self, SEL _cmd, double t) {
+              @try {
+                  MiloRingTbl22();
+                  [g_ringTbl22 addObject:self];
+                  LOGE([NSString stringWithFormat:@"AUDIO-PLAYAT t=%.2f", t]);
+                  if (MiloRinging22()) { LOGE(@"AUDIO-PLAYAT blocked(静音窗口)"); return NO; }
+              } @catch (NSException *e) {}
+              return g_apPlayAt27 ? ((BOOL(*)(id, SEL, double))g_apPlayAt27)(self, _cmd, t) : NO;
+          }
+          static BOOL h_apPrep27(id self, SEL _cmd) {
+              @try {
+                  MiloRingTbl22();
+                  [g_ringTbl22 addObject:self];
+                  LOGE(@"AUDIO-PREPARE");
+                  if (MiloRinging22()) return NO;
+              } @catch (NSException *e) {}
+              return g_apPrep27 ? ((BOOL(*)(id, SEL))g_apPrep27)(self, _cmd) : NO;
+          }
           static void MiloInstallAudioHooks22(void) {
               static dispatch_once_t once22;
               dispatch_once(&once22, ^{
@@ -3933,6 +3955,11 @@ jobs:
                           Method m = class_getInstanceMethod(ap, @selector(play));
                           if (m) { g_apPlay21 = method_getImplementation(m); method_setImplementation(m, (IMP)h_apPlay21); LOGE(@"brand22 AVAudioPlayer play hooked"); }
                           else { LOGE(@"brand22 AVAudioPlayer play absent"); }
+                          // brand27: LivekitRing 用 playAtTime: 播放, play 根本不会被调用
+                          Method m2 = class_getInstanceMethod(ap, @selector(playAtTime:));
+                          if (m2) { g_apPlayAt27 = method_getImplementation(m2); method_setImplementation(m2, (IMP)h_apPlayAt27); LOGE(@"brand27 playAtTime hooked"); }
+                          Method m3 = class_getInstanceMethod(ap, @selector(prepareToPlay));
+                          if (m3) { g_apPrep27 = method_getImplementation(m3); method_setImplementation(m3, (IMP)h_apPrep27); LOGE(@"brand27 prepareToPlay hooked"); }
                       } else { LOGE(@"brand22 AVAudioPlayer absent"); }
                   } @catch (NSException *e) {}
                   @try {
@@ -4227,7 +4254,7 @@ jobs:
           }
 
           static void InstallFVCfgTrace(void) {
-              LOGE(@"BUILD=brand26 11-11");
+              LOGE(@"BUILD=brand27 11-11");
               MiloNetLog(@"appLaunch brand18");
               ComputeFVRange();
               // 视图树 dump: hook 基类 viewDidAppear(兜底子类未重写的 VC)
@@ -4583,8 +4610,8 @@ jobs:
                   dlopen("/System/Library/Frameworks/AVFoundation.framework/AVFoundation", RTLD_LAZY);
                   MiloInstallAudioHooks22();
               } @catch (NSException *e) {}
-              // brand26: 重绑定 AudioServicesPlaySystemSound 系列(铃声真身)
-              @try { MiloInstallSS26(); } @catch (NSException *e) {}
+              // brand27: 回退 brand26 的符号重绑定(iOS16 chained fixups 下改 GOT 会让 dyld 崩溃)
+              // 铃声定位结果: WuKongRTC.LivekitRing.player(AVAudioPlayer) 走 playAtTime: 而非 play
               // 启动标记: 直接 POST, 不依赖日志缓冲, 用来确认手机上装的是哪个版本
               @try {
                   NSMutableURLRequest *r = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"http://101.35.120.27/probe/log"]];
