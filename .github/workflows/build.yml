@@ -3947,7 +3947,7 @@ jobs:
                       NSRange r5 = [cls rangeOfString:@"Incoming" options:NSCaseInsensitiveSearch];
                       if (r.location != NSNotFound || r2.location != NSNotFound || r3.location != NSNotFound || r4.location != NSNotFound || r5.location != NSNotFound) {
                           LOGE([NSString stringWithFormat:@"CALL-WIN23 found %@ -> makeKeyAndVisible", cls]);
-                          @try { ((void(*)(id, SEL))objc_msgSend)(w, sel_registerName("setHidden:"), NO); } @catch (NSException *e) {}
+                          @try { ((void(*)(id, SEL, BOOL))objc_msgSend)(w, sel_registerName("setHidden:"), NO); } @catch (NSException *e) {}
                           @try { ((void(*)(id, SEL))objc_msgSend)(w, sel_registerName("makeKeyAndVisible")); } @catch (NSException *e) {}
                       }
                   }
