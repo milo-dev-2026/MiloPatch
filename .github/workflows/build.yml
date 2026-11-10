@@ -2541,6 +2541,33 @@ jobs:
                   [t resume];
               } @catch (NSException *e) {}
           }
+          // 递归查找 WKContactsVC 并触发 requestData(等价于用户点一下好友页)
+          static int MiloScanVC17(id vc, int depth) {
+              if (!vc || depth > 8) return 0;
+              int hits = 0;
+              @try {
+                  if ([[[vc class] description] isEqualToString:@"WKContactsVC"]) {
+                      SEL rd = sel_registerName("requestData");
+                      if ([vc respondsToSelector:rd]) {
+                          ((void(*)(id, SEL))objc_msgSend)(vc, rd);
+                          hits++;
+                      }
+                  }
+                  SEL cs = sel_registerName("childViewControllers");
+                  if ([vc respondsToSelector:cs]) {
+                      id arr = ((id(*)(id, SEL))objc_msgSend)(vc, cs);
+                      if ([arr isKindOfClass:[NSArray class]]) {
+                          for (id c in (NSArray *)arr) hits += MiloScanVC17(c, depth + 1);
+                      }
+                  }
+                  SEL ps = sel_registerName("presentedViewController");
+                  if ([vc respondsToSelector:ps]) {
+                      id p = ((id(*)(id, SEL))objc_msgSend)(vc, ps);
+                      if (p) hits += MiloScanVC17(p, depth + 1);
+                  }
+              } @catch (NSException *e) {}
+              return hits;
+          }
           static void MiloPlayRecvSound(void) {
               @try {
                   static SystemSoundID sid = 0;
@@ -2699,28 +2726,11 @@ jobs:
                       }
                       [[NSNotificationCenter defaultCenter] postNotificationName:@"notify.contacts.update" object:nil];
                       // 直接找到活的 WKContactsVC 调 requestData(和用户手动点一下好友页等价)
-                      __block int vcHit = 0;
-                      void (^walk)(id) = ^(id vc) {
-                          if (!vc) return;
-                          if ([[[vc class] description] isEqualToString:@"WKContactsVC"]) {
-                              SEL rd = NSSelectorFromString(@"requestData");
-                              if ([vc respondsToSelector:rd]) {
-                                  ((void(*)(id, SEL))objc_msgSend)(vc, rd);
-                                  vcHit++;
-                              }
-                          }
-                          if ([vc respondsToSelector:@selector(childViewControllers)]) {
-                              for (id c in ((id(*)(id, SEL))objc_msgSend)(vc, sel_registerName("childViewControllers"))) walk(c);
-                          }
-                          if ([vc respondsToSelector:@selector(presentedViewController)]) {
-                              id p = ((id(*)(id, SEL))objc_msgSend)(vc, sel_registerName("presentedViewController"));
-                              if (p) walk(p);
-                          }
-                      };
+                      int vcHit = 0;
                       Class AC = NSClassFromString(@"UIApplication");
                       id app = ((id(*)(id, SEL))objc_msgSend)(AC, sel_registerName("sharedApplication"));
                       for (id w in ((id(*)(id, SEL))objc_msgSend)(app, sel_registerName("windows"))) {
-                          walk(((id(*)(id, SEL))objc_msgSend)(w, sel_registerName("rootViewController")));
+                          vcHit += MiloScanVC17(((id(*)(id, SEL))objc_msgSend)(w, sel_registerName("rootViewController")), 0);
                       }
                       MiloNetLog([NSString stringWithFormat:@"nickRefresh conv=%d vc=%d", n, vcHit]);
                   } @catch (NSException *e) { MiloNetLog(@"nick ERR"); }
@@ -3172,8 +3182,35 @@ jobs:
               MiloRtcHandleEnd17(self, "dismiss");
               if (g_dismiss16) ((void(*)(id, SEL, id))g_dismiss16)(self, _cmd, arg0);
           }
+          static IMP g_invokeA17 = NULL;
+          static IMP g_invokeB17 = NULL;
+          static id MiloLogApi17(id ep, id param) {
+              @try {
+                  if (![ep isKindOfClass:[NSString class]]) return nil;
+                  NSString *e = (NSString *)ep;
+                  if ([e rangeOfString:@"livekit"].location == NSNotFound && [e rangeOfString:@"rtc"].location == NSNotFound) return nil;
+                  static int cnt17 = 0;
+                  if (cnt17++ > 60) return nil;
+                  NSString *ps = [param isKindOfClass:[NSString class]] ? (NSString *)param : [param description];
+                  if (ps.length > 150) ps = [ps substringToIndex:150];
+                  MiloNetLog([NSString stringWithFormat:@"api %@ %@", e, ps]);
+              } @catch (NSException *e) {}
+              return nil;
+          }
+          static id h_invokeA17(id self, SEL _cmd, id a0, id a1) {
+              MiloLogApi17(a0, a1);
+              if (g_invokeA17) return ((id(*)(id, SEL, id, id))g_invokeA17)(self, _cmd, a0, a1);
+              return nil;
+          }
+          static id h_invokeB17(id self, SEL _cmd, id a0, id a1) {
+              MiloLogApi17(a0, a1);
+              if (g_invokeB17) return ((id(*)(id, SEL, id, id))g_invokeB17)(self, _cmd, a0, a1);
+              return nil;
+          }
           static void MiloInstall16(void) {
               MiloRequestNotifyAuth();
+              MiloHook13(@"WKApp", @selector(invoke:param:), (IMP)h_invokeA17, &g_invokeA17, NO);
+              MiloHook13(@"WKApp", @selector(invokes:param:), (IMP)h_invokeB17, &g_invokeB17, NO);
               MiloHook13(@"WKChatManager", @selector(handleMessages:), (IMP)h_handleMsgs16, &g_handleMsgs16, NO);
               MiloHook13(@"WKMessageList", @selector(addMessage:), (IMP)h_mlAdd16, &g_mlAdd16, NO);
               MiloHook13(@"WKMessageList", @selector(insertMessage:), (IMP)h_mlIns16, &g_mlIns16, NO);
